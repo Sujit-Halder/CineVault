@@ -1,1 +1,4 @@
 **/node_modules/
+backend/movies.json
+backend/movies.json.backup
+/backend/logs/
