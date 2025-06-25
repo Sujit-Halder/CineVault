@@ -2,3 +2,4 @@
 backend/movies.json
 backend/movies.json.backup
 /backend/logs/
+**/.env

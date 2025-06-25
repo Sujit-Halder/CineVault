@@ -43,7 +43,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
 
     const handleGetMovies = async () => {
         try {
-            const response = await axios.get('http://localhost:5000/api/movie');
+            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/movie`);
             setMovies(response.data.movies);
             alert(response.data.message);
         } catch (error) {
@@ -53,7 +53,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
 
     const handleAddMovie = async (movieData) => {
         try {
-            const response = await axios.post('http://localhost:5000/api/movie', movieData);
+            const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/movie`, movieData);
             setMovies(response.data.movies);
             alert(response.data.message);
         } catch (error) {
@@ -71,7 +71,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
         }
 
         try {
-            const response = await axios.put('http://localhost:5000/api/movie', movieDataEdited);
+            const response = await axios.put(`${import.meta.env.VITE_API_URL}/api/movie`, movieDataEdited);
             setMovies(response.data.movies);
             alert(response.data.message);
         } catch (error) {
@@ -81,7 +81,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
 
     const handleDeleteMovie = async (movieId) => {
         try {
-            const response = await axios.delete('http://localhost:5000/api/movie', { data: { movieId } });
+            const response = await axios.delete(`${import.meta.env.VITE_API_URL}/api/movie`, { data: { movieId } });
             setMovies(response.data.movies);
             alert(response.data.message);
         } catch (error) {
@@ -91,7 +91,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
 
     const handleFavoriteMovie = async (movieId) => {
         try {
-            const response = await axios.patch('http://localhost:5000/api/movie', { movieId });
+            const response = await axios.patch(`${import.meta.env.VITE_API_URL}/api/movie`, { movieId });
             setMovies(response.data.movies);
             alert(response.data.message);
         } catch (error) {

@@ -1,11 +1,12 @@
 const express = require('express');
 const cors = require('cors');
-const routes=require('./routes');
+require('dotenv').config();
+const routes = require('./routes');
 const app = express();
-const PORT=3001;
+const PORT = process.env.PORT;
 
 app.use(cors({
-    origin: "http://localhost:3000",
+    origin: process.env.WEBSITE,
 }));
 
 app.use(express.json({ limit: '10mb' }));
