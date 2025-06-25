@@ -41,26 +41,23 @@ const Content = ({ selectedMenu, searchTerm }) => {
 
 
 
-    const handleGetMovies = async (isMounted) => {
-        const response = await axios.get('http://localhost:5000/api/movie');
-        if (response.status === 200) {
+    const handleGetMovies = async () => {
+        try {
+            const response = await axios.get('http://localhost:5000/api/movie');
             setMovies(response.data.movies);
             alert(response.data.message);
-        }
-        else {
-            alert("Failed to fetch movie list. Please try again")
+        } catch (error) {
+            alert(error.response?.data?.message || "Failed to fetch movie list. Please try again");
         }
     };
 
-
     const handleAddMovie = async (movieData) => {
-        const response = await axios.post('http://localhost:5000/api/movie', movieData);
-        if (response.status === 200) {
+        try {
+            const response = await axios.post('http://localhost:5000/api/movie', movieData);
             setMovies(response.data.movies);
             alert(response.data.message);
-        }
-        else {
-            alert("Failed to add movie  to the list. Please try again");
+        } catch (error) {
+            alert(error.response?.data?.message || "Failed to add movie to the list. Please try again");
         }
     };
 
@@ -73,37 +70,35 @@ const Content = ({ selectedMenu, searchTerm }) => {
             return;
         }
 
-        const response = await axios.put('http://localhost:5000/api/movie', movieDataEdited);
-        if (response.status === 200) {
+        try {
+            const response = await axios.put('http://localhost:5000/api/movie', movieDataEdited);
             setMovies(response.data.movies);
             alert(response.data.message);
-        }
-        else {
-            alert("Failed to edit movie in the list. Please try again");
+        } catch (error) {
+            alert(error.response?.data?.message || "Failed to edit movie in the list. Please try again");
         }
     };
 
     const handleDeleteMovie = async (movieId) => {
-        const response = await axios.delete('http://localhost:5000/api/movie', { data: { movieId } });
-        if (response.status === 200) {
+        try {
+            const response = await axios.delete('http://localhost:5000/api/movie', { data: { movieId } });
             setMovies(response.data.movies);
             alert(response.data.message);
-        }
-        else {
-            alert("Failed to delete movie from the list. Please try again");
+        } catch (error) {
+            alert(error.response?.data?.message || "Failed to delete movie from the list. Please try again");
         }
     };
 
     const handleFavoriteMovie = async (movieId) => {
-        const response = await axios.patch('http://localhost:5000/api/movie', { movieId });
-        if (response.status === 200) {
+        try {
+            const response = await axios.patch('http://localhost:5000/api/movie', { movieId });
             setMovies(response.data.movies);
-            if (response.status !== 200) alert(response.data.message);
-        }
-        else {
-            alert("Failed to delete movie from the list. Please try again");
+            alert(response.data.message);
+        } catch (error) {
+            alert(error.response?.data?.message || "Failed to update favorite status. Please try again");
         }
     };
+
 
     const handleSaveMovie = (movieData) => {
         if (editingMovie) {
