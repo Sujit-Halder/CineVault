@@ -172,6 +172,9 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Horror">👻 Horror</option>
                             <option value="Musical">🎶 Musical</option>
                             <option value="Mystery">🔍 Mystery</option>
+                            <option value="Vampire">🧛‍♂️ Vampire</option>
+                            <option value="Superhero">🦸 Superhero</option>
+                            <option value="Martial arts">🥋 Martial Arts</option>
                             <option value="Romance">❤️ Romance</option>
                             <option value="Science Fiction">👽 Science Fiction</option>
                             <option value="Sport">🏅 Sport</option>
@@ -279,6 +282,8 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Golden Trailer Award">🎺 Golden Trailer Award</option>
                                 <option value="National Film Award">🎞️ National Film Award</option>
                                 <option value="Filmfare Award">🎤 Filmfare Award</option>
+                                <option value="Golden Raspberry Award">🍇 Golden Raspberry Award</option>
+                                <option value="Annie Award">🎨 Annie Award</option>
                                 <option value="Sundance Film Festival">🎥 Sundance Film Festival</option>
                                 <option value="Venice Film Festival">🎭 Venice Film Festival</option>
                                 <option value="Berlin International Film Festival">🐻 Berlin International Film Festival</option>
