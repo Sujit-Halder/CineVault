@@ -20,11 +20,10 @@ const Content = ({ selectedMenu, searchTerm }) => {
     });
     const [sortType, setSortType] = useState('modification');
     const [orderType, setOrderType] = useState('ascending');
-
     const [showFilter, setShowFilter] = useState(false);
 
-    // Close panel when clicking outside
     const panelRef = useRef();
+
     useEffect(() => {
         const handleClickOutside = (event) => {
             if (panelRef.current && !panelRef.current.contains(event.target)) {
@@ -38,8 +37,6 @@ const Content = ({ selectedMenu, searchTerm }) => {
     useEffect(() => {
         handleGetMovies();
     }, []);
-
-
 
     const handleGetMovies = async () => {
         try {
@@ -99,7 +96,6 @@ const Content = ({ selectedMenu, searchTerm }) => {
         }
     };
 
-
     const handleSaveMovie = (movieData) => {
         if (editingMovie) {
             handleEditMovie(movieData);
@@ -114,6 +110,59 @@ const Content = ({ selectedMenu, searchTerm }) => {
         setEditingMovie(movie);
         setShowForm(true);
     };
+
+    // Apply all filters and search
+    const filteredMovies = movies.filter((movie) => {
+        if (selectedMenu === "Favorites" && !movie.favorite) return false;
+        if (selectedMenu === "Watch Later" && movie.status === "Watched") return false;
+
+        if (filters.status && (!movie.status || !movie.status.includes(filters.status)))
+            return false;
+
+        if (
+            filters.genre.length > 0 &&
+            (!movie.genres || !filters.genre.some(g => movie.genres.includes(g)))
+        ) return false;
+
+        if (
+            filters.language.length > 0 &&
+            (!movie.language || !filters.language.some(l => movie.language.includes(l)))
+        ) return false;
+
+        if (
+            filters.tags.length > 0 &&
+            (!movie.tags || !filters.tags.some(t => movie.tags.includes(t)))
+        ) return false;
+
+        if (filters.rating && movie.rating !== filters.rating) return false;
+
+        if (
+            filters.award &&
+            (!movie.awards || !movie.awards.includes(filters.award))
+        ) return false;
+
+        if (
+            filters.releaseYear &&
+            (!movie.releaseDate ||
+                new Date(movie.releaseDate).getFullYear().toString() !== filters.releaseYear)
+        ) return false;
+
+        if (searchTerm) {
+            const inTitle = movie.title?.toLowerCase().includes(searchTerm);
+            const inDirector = movie.director?.toLowerCase().includes(searchTerm);
+            const inCasts = movie.casts?.toLowerCase().includes(searchTerm);
+            const inpProducers = Array.isArray(movie.productionCompany)
+                ? movie.productionCompany.some(producer => producer.toLowerCase().includes(searchTerm))
+                : false;
+            const inCountry = Array.isArray(movie.countryOfOrigin)
+                ? movie.countryOfOrigin.some(country => country.toLowerCase().includes(searchTerm))
+                : false;
+
+            if (!inTitle && !inDirector && !inCasts && !inpProducers && !inCountry) return false;
+        }
+
+        return true;
+    });
 
     return (
         <div className="p-4 m-2 bg-gray-200 rounded shadow-md flex flex-col gap-4 h-full overflow-auto relative">
@@ -173,91 +222,29 @@ const Content = ({ selectedMenu, searchTerm }) => {
                 </div>
             </div>
 
+            {/* Show count info */}
+            <p className="text-sm text-gray-600 text-right italic">
+                Showing {filteredMovies.length} of {movies.length} movies
+            </p>
 
-
-            {movies.length > 0 ? (
-                movies
-                    .filter((movie) => {
-                        // ----- selectedMenu conditions -----
-                        if (selectedMenu === "Favorites" && !movie.favorite) return false;
-                        if (selectedMenu === "Watch Later" && movie.status === "Watched") return false;
-                        // (For "Home", allow all movies — no early return.)
-
-                        // ----- custom filter conditions -----
-
-                        // Status
-                        if (filters.status && (!movie.status || !movie.status.includes(filters.status)))
-                            return false;
-
-                        // Genre
-                        if (
-                            filters.genre.length > 0 &&
-                            (!movie.genres || !filters.genre.some(g => movie.genres.includes(g)))
-                        ) return false;
-
-                        // Language
-                        if (
-                            filters.language.length > 0 &&
-                            (!movie.language || !filters.language.some(l => movie.language.includes(l)))
-                        ) return false;
-
-                        // Tags
-                        if (
-                            filters.tags.length > 0 &&
-                            (!movie.tags || !filters.tags.some(t => movie.tags.includes(t)))
-                        ) return false;
-
-                        // Rating
-                        if (filters.rating && movie.rating !== filters.rating) return false;
-
-                        // Award
-                        if (
-                            filters.award &&
-                            (!movie.awards || !movie.awards.includes(filters.award))
-                        ) return false;
-
-                        // Release year
-                        if (
-                            filters.releaseYear &&
-                            (!movie.releaseDate ||
-                                new Date(movie.releaseDate).getFullYear().toString() !== filters.releaseYear)
-                        ) return false;
-
-                        // Search Filter
-                        if (searchTerm) {
-                            const inTitle = movie.title?.toLowerCase().includes(searchTerm);
-                            const inDirector = movie.director?.toLowerCase().includes(searchTerm);
-                            const inCasts = movie.casts?.toLowerCase().includes(searchTerm);
-                            const inpProducers = Array.isArray(movie.productionCompany)
-                                ? movie.productionCompany.some(producer => producer.toLowerCase().includes(searchTerm))
-                                : false;
-                            const inCountry = Array.isArray(movie.countryOfOrigin)
-                                ? movie.countryOfOrigin.some(country => country.toLowerCase().includes(searchTerm))
-                                : false;
-
-                            if (!inTitle && !inDirector && !inCasts && !inpProducers && !inCountry) return false;
-                        }
-
-                        return true; // passed all filters
-                    })
+            {/* Movie cards */}
+            {filteredMovies.length > 0 ? (
+                filteredMovies
                     .sort((a, b) => {
                         let valA = a[sortType];
                         let valB = b[sortType];
 
-                        // Parse dates
                         const dateFields = ['creation', 'watchDate', 'releaseDate', 'modification'];
                         if (dateFields.includes(sortType)) {
                             valA = new Date(valA);
                             valB = new Date(valB);
                         }
 
-                        // Parse numeric
                         if (sortType === 'duration') {
                             valA = Number(valA);
                             valB = Number(valB);
                         }
 
-                        // Title (string)
                         if (sortType === 'title') {
                             valA = valA?.toLowerCase() || '';
                             valB = valB?.toLowerCase() || '';
@@ -280,8 +267,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
                 <p className="text-gray-500 italic text-center">No movies yet.</p>
             )}
 
-
-            {showForm &&
+            {showForm && (
                 <MovieForm
                     onClose={() => {
                         setShowForm(false);
@@ -290,7 +276,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
                     onSubmit={handleSaveMovie}
                     initialData={editingMovie}
                 />
-            }
+            )}
         </div>
     );
 };
