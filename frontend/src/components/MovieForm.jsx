@@ -161,6 +161,9 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Action">🔫 Action</option>
                             <option value="Adventure">🧭 Adventure</option>
                             <option value="Animation">🎨 Animation</option>
+                            <option value="Biblical">📖 Biblical</option>
+                            <option value="Body Horror">🧟‍♂️ Body Horror</option>
+                            <option value="Biographical">👤 Biographical</option>
                             <option value="Comedy">😂 Comedy</option>
                             <option value="Crime">🕵️ Crime</option>
                             <option value="Dystopian">🧬 Dystopian</option>
@@ -172,6 +175,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Fantasy">🧙 Fantasy</option>
                             <option value="Historical">🏰 Historical</option>
                             <option value="Horror">👻 Horror</option>
+                            <option value="Gothic">🏰 Gothic</option>
                             <option value="Musical">🎶 Musical</option>
                             <option value="Mystery">🔍 Mystery</option>
                             <option value="Vampire">🧛‍♂️ Vampire</option>
@@ -180,6 +184,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Romance">❤️ Romance</option>
                             <option value="Zombie">🧟 Zombie</option>
                             <option value="Science Fiction">👽 Science Fiction</option>
+                            <option value="Supernatural">👻 Supernatural</option>
                             <option value="Sport">🏅 Sport</option>
                             <option value="Drama">🎭 Drama</option>
                             <option value="Thriller">😱 Thriller</option>
@@ -283,6 +288,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="MTV Award">🍿 MTV Movie & TV Award</option>
                                 <option value="Golden Reel Award">🎧 Golden Reel Award</option>
                                 <option value="Teen Choice Award">📱 Teen Choice Award</option>
+                                <option value="Nickelodeon Kids' Choice Award">🟠 Nickelodeon Kids' Choice Award</option>
                                 <option value="Golden Trailer Award">🎺 Golden Trailer Award</option>
                                 <option value="National Film Award">🎞️ National Film Award</option>
                                 <option value="Filmfare Award">🎤 Filmfare Award</option>
