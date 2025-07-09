@@ -213,7 +213,7 @@ const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
                             </p>
                         )}
 
-                        {movieData.countryOfOrigin && (
+                        {movieData.countryOfOrigin?.length > 0 && (
                             <p className="">
                                 <span className="text-gray-600">🗺️ Country:</span>{' '}
                                 <span className="text-blue-800">{movieData.countryOfOrigin.join(', ')}</span>

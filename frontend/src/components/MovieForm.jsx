@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 const MovieForm = ({ onClose, onSubmit, initialData }) => {
     const [form, setForm] = useState({
         title: '',
-        status: '',
+        status: 'Announced',
         releaseDate: '',
         watchDate: '',
         genres: [],
@@ -358,7 +358,6 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 className="w-full p-2 border rounded bg-white text-gray-800 shadow-inner"
                                 value={form.countryOfOrigin}
                                 onChange={handleChange}
-                                required
                             >
                                 <option value="United States">🇺🇸 United States</option>
                                 <option value="United Kingdom">🇬🇧 United Kingdom</option>
@@ -416,7 +415,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                         </div>
                     )}
 
-                    {["Released", "Watched"].includes(form.status) && (
+                    {["Released", "Watched", "Production Started"].includes(form.status) && (
                         <div>
                             <label className="block mb-1 font-medium text-gray-700">Production Companies (',' seperated)</label>
                             <input
@@ -460,19 +459,21 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                         </div>
                     )}
 
-                    <div>
-                        <label className="block mb-1 font-medium text-gray-700">Poster URL</label>
-                        <input
-                            name="posterUrl"
-                            type="text"
-                            placeholder="Poster URL"
-                            className="w-full p-2 border rounded bg-white text-gray-800 shadow-inner"
-                            value={form.posterUrl}
-                            onChange={handleChange}
-                        />
-                    </div>
+                    {!["Production Started", "Announced"].includes(form.status) && (
+                        <div>
+                            <label className="block mb-1 font-medium text-gray-700">Poster URL</label>
+                            <input
+                                name="posterUrl"
+                                type="text"
+                                placeholder="Poster URL"
+                                className="w-full p-2 border rounded bg-white text-gray-800 shadow-inner"
+                                value={form.posterUrl}
+                                onChange={handleChange}
+                            />
+                        </div>
+                    )}
 
-                    {form.status !== "Production Started" && (
+                    {!["Production Started", "Announced"].includes(form.status) && (
                         <div>
                             <label className="block mb-1 font-medium text-gray-700">Trailer URL (YouTube)</label>
                             <input
