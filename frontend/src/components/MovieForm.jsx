@@ -459,7 +459,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                         </div>
                     )}
 
-                    {!["Production Started", "Announced"].includes(form.status) && (
+                    {!["Production Started", "Announced","Trailer Only"].includes(form.status) && (
                         <div>
                             <label className="block mb-1 font-medium text-gray-700">Poster URL</label>
                             <input
