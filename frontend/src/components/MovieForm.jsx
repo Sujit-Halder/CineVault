@@ -161,6 +161,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Action">🔫 Action</option>
                             <option value="Adventure">🧭 Adventure</option>
                             <option value="Animation">🎨 Animation</option>
+                            <option value="Apocalyptic">🌍💥 Apocalyptic</option>
                             <option value="Biblical">📖 Biblical</option>
                             <option value="Body Horror">🧟‍♂️ Body Horror</option>
                             <option value="Biographical">👤 Biographical</option>
@@ -181,6 +182,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Mystery">🔍 Mystery</option>
                             <option value="Vampire">🧛‍♂️ Vampire</option>
                             <option value="Superhero">🦸 Superhero</option>
+                            <option value="Supervillain">🦹‍♂️ Supervillain</option>
                             <option value="Martial arts">🥋 Martial Arts</option>
                             <option value="Romance">❤️ Romance</option>
                             <option value="Zombie">🧟 Zombie</option>
@@ -192,6 +194,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Thriller">😱 Thriller</option>
                             <option value="War">⚔️ War</option>
                             <option value="Western">🤠 Western</option>
+                            <option value="Anti-Western">🤠🚫 Anti-Western</option>
                         </select>
                     </div>
 
@@ -488,7 +491,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                         </div>
                     )}
 
-                    {form.status === "Watched" && (
+                    {["Released", "Watched"].includes(form.status) && (
                         <div>
                             <label className="block mb-1 font-medium text-gray-700">Summary</label>
                             <textarea
