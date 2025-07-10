@@ -139,6 +139,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="National Film Award">National Film Award</option>
                     <option value="Golden Raspberry Award">Golden Raspberry Award</option>
                     <option value="Annie Award">Annie Award</option>
+                    <option value="Scream Award">Scream Award</option>
                     <option value="Filmfare Award">Filmfare Award</option>
                     <option value="Sundance Film Festival">Sundance Film Festival</option>
                     <option value="Venice Film Festival">Venice Film Festival</option>
