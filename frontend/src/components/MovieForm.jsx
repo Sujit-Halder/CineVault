@@ -187,9 +187,11 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Romance">❤️ Romance</option>
                             <option value="Zombie">🧟 Zombie</option>
                             <option value="Sex">🔞 Sex</option>
+                            <option value="Spy">🕵️‍♂️ Spy</option>
                             <option value="Science Fiction">👽 Science Fiction</option>
                             <option value="Supernatural">👻 Supernatural</option>
                             <option value="Sport">🏅 Sport</option>
+                            <option value="Sword and Sorcery">🗡️🧙 Sword and Sorcery</option>
                             <option value="Drama">🎭 Drama</option>
                             <option value="Thriller">😱 Thriller</option>
                             <option value="War">⚔️ War</option>
@@ -416,6 +418,9 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Iceland">🇮🇸 Iceland</option>
                                 <option value="Peru">🇵🇪 Peru</option>
                                 <option value="Venezuela">🇻🇪 Venezuela</option>
+                                <option value="United Arab Emirates">🇦🇪 United Arab Emirates</option>
+                                <option value="Hong Kong">🇭🇰 Hong Kong</option>
+
                             </select>
                         </div>
                     )}
@@ -464,7 +469,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                         </div>
                     )}
 
-                    {!["Production Started", "Announced","Trailer Only"].includes(form.status) && (
+                    {!["Production Started", "Announced", "Trailer Only"].includes(form.status) && (
                         <div>
                             <label className="block mb-1 font-medium text-gray-700">Poster URL</label>
                             <input
