@@ -19,7 +19,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
         releaseYear: '',
     });
     const [sortType, setSortType] = useState('modification');
-    const [orderType, setOrderType] = useState('ascending');
+    const [orderType, setOrderType] = useState('descending');
     const [showFilter, setShowFilter] = useState(false);
 
     const panelRef = useRef();
@@ -230,6 +230,13 @@ const Content = ({ selectedMenu, searchTerm }) => {
             {/* Movie cards */}
             {filteredMovies.length > 0 ? (
                 filteredMovies
+                    .filter(movie => {
+                        if (sortType === 'duration') {
+                            const duration = movie.duration;
+                            return duration !== null && duration !== undefined && String(duration).trim() !== '';
+                        }
+                        return true;
+                    })
                     .sort((a, b) => {
                         let valA = a[sortType];
                         let valB = b[sortType];

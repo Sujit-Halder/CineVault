@@ -407,6 +407,8 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Ukraine">🇺🇦 Ukraine</option>
                                 <option value="Romania">🇷🇴 Romania</option>
                                 <option value="Malaysia">🇲🇾 Malaysia</option>
+                                <option value="Morocco">🇲🇦 Morocco</option>
+                                <option value="Malta">🇲🇹 Malta</option>
                                 <option value="Philippines">🇵🇭 Philippines</option>
                                 <option value="Indonesia">🇮🇩 Indonesia</option>
                                 <option value="Vietnam">🇻🇳 Vietnam</option>
