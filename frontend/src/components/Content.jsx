@@ -143,9 +143,9 @@ const Content = ({ selectedMenu, searchTerm }) => {
 
         if (
             filters.releaseYear &&
-            (!movie.releaseDate ||
-                new Date(movie.releaseDate).getFullYear().toString() !== filters.releaseYear)
+            (!movie.releaseDate?.trim() || new Date(movie.releaseDate).getFullYear() !== Number(filters.releaseYear))
         ) return false;
+
 
         if (searchTerm) {
             const inTitle = movie.title?.toLowerCase().includes(searchTerm);
@@ -235,6 +235,17 @@ const Content = ({ selectedMenu, searchTerm }) => {
                             const duration = movie.duration;
                             return duration !== null && duration !== undefined && String(duration).trim() !== '';
                         }
+
+                        if (sortType === 'releaseDate') {
+                            const releaseDate = movie.releaseDate;
+                            return releaseDate !== null && releaseDate !== undefined && String(releaseDate).trim() !== '';
+                        }
+
+                        if (sortType === 'watchDate') {
+                            const watchDate = movie.watchDate;
+                            return watchDate !== null && watchDate !== undefined && String(watchDate).trim() !== '';
+                        }
+
                         return true;
                     })
                     .sort((a, b) => {
