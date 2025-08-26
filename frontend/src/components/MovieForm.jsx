@@ -161,12 +161,15 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Action">🔫 Action</option>
                             <option value="Adventure">🧭 Adventure</option>
                             <option value="Animation">🎨 Animation</option>
+                            <option value="Anthology">📚 Anthology</option>
                             <option value="Apocalyptic">🌍💥 Apocalyptic</option>
+                            <option value="Absurdist">🌀 Absurdist</option>
                             <option value="Biblical">📖 Biblical</option>
                             <option value="Body Horror">🧟‍♂️ Body Horror</option>
                             <option value="Biographical">👤 Biographical</option>
                             <option value="Comedy">😂 Comedy</option>
                             <option value="Crime">🕵️ Crime</option>
+                            <option value="Coming Of Age">🧒 Coming of Age</option>
                             <option value="Dystopian">🧬 Dystopian</option>
                             <option value="Documentary">🎥 Documentary</option>
                             <option value="Disaster">🌪️ Disaster</option>
@@ -174,9 +177,11 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Epic">👑 Epic</option>
                             <option value="Family">👨‍👩‍👧‍👦 Family</option>
                             <option value="Fantasy">🧙 Fantasy</option>
+                            <option value="Found Footage">📹 Found Footage</option>
                             <option value="Historical">🏰 Historical</option>
                             <option value="Horror">👻 Horror</option>
                             <option value="Gothic">🏰 Gothic</option>
+                            <option value="Indie">🎬 Indie</option>
                             <option value="Monster">👹 Monster</option>
                             <option value="Musical">🎶 Musical</option>
                             <option value="Mystery">🔍 Mystery</option>
@@ -192,6 +197,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Supernatural">👻 Supernatural</option>
                             <option value="Sport">🏅 Sport</option>
                             <option value="Sword and Sorcery">🗡️🧙 Sword and Sorcery</option>
+                            <option value="Survival">🧭 Survival</option>
                             <option value="Drama">🎭 Drama</option>
                             <option value="Thriller">😱 Thriller</option>
                             <option value="War">⚔️ War</option>
@@ -328,7 +334,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Blockbuster">💥 Blockbuster</option>
                                 <option value="Slow Burn">🔥 Slow Burn</option>
                                 <option value="Feel Good">😊 Feel Good</option>
-                                <option value="Coming of Age">🧒 Coming of Age</option>
+                                <option value="Mind Bending">🧠 Mind Bending</option>
                                 <option value="Psychological">🧠 Psychological</option>
                                 <option value="Plot Twist">🔀 Plot Twist</option>
                                 <option value="Non-linear">🧩 Non-linear</option>
@@ -341,7 +347,6 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Critically Acclaimed">📢 Critically Acclaimed</option>
                                 <option value="Hidden Gem">💎 Hidden Gem</option>
                                 <option value="Flop">💔 Flop</option>
-                                <option value="Indie">🎬 Indie</option>
                                 <option value="Family Friendly">👨‍👩‍👧‍👦 Family Friendly</option>
                                 <option value="Adult Only">🔞 Adult Only</option>
                                 <option value="Foreign Language">🌍 Foreign Language</option>
@@ -350,7 +355,6 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Character Driven">🧍 Character Driven</option>
                                 <option value="Visually Stunning">🌈 Visually Stunning</option>
                                 <option value="Underground">🌑 Underground</option>
-
                             </select>
                         </div>
                     )}
@@ -420,6 +424,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Iceland">🇮🇸 Iceland</option>
                                 <option value="Peru">🇵🇪 Peru</option>
                                 <option value="Venezuela">🇻🇪 Venezuela</option>
+                                <option value="Latvia">🇱🇻 Latvia</option>
                                 <option value="United Arab Emirates">🇦🇪 United Arab Emirates</option>
                                 <option value="Hong Kong">🇭🇰 Hong Kong</option>
 
