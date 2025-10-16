@@ -98,6 +98,7 @@ const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
                             src={movieData.posterUrl}
                             alt={movieData.title}
                             className="rounded-lg object-cover max-h-full w-full"
+                            loading="lazy"
                         />
                     ) : (
                         <div className="w-full h-64 bg-gray-200 rounded-lg flex items-center justify-center text-gray-500">
@@ -310,17 +311,39 @@ const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
                 {/* Trailer Video */}
                 <div className="lg:w-1/3 w-full flex justify-center items-center">
                     {movieData.trailerUrl ? (
-                        <iframe
-                            className="w-full h-full rounded-lg"
-                            src={movieData.trailerUrl.replace("watch?v=", "embed/")}
-                            title={`Trailer for ${movieData.title}`}
-                            allowFullScreen
-                        />
+                        <div className="relative w-full h-full rounded-lg overflow-hidden">
+                            {/* Thumbnail */}
+                            <img
+                                src={`https://img.youtube.com/vi/${movieData.trailerUrl.split("v=")[1]}/hqdefault.jpg`}
+                                alt={`Trailer thumbnail for ${movieData.title}`}
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                            />
+
+                            {/* Play Button Overlay */}
+                            <button
+                                onClick={(e) => {
+                                    const container = e.currentTarget.parentElement;
+                                    container.innerHTML = `
+          <iframe
+            class="w-full h-full rounded-lg"
+            src="${movieData.trailerUrl.replace("watch?v=", "embed/")}?autoplay=1"
+            title="Trailer for ${movieData.title}"
+            allowfullscreen
+          ></iframe>
+        `;
+                                }}
+                                className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-40 text-white text-3xl"
+                            >
+                                ▶
+                            </button>
+                        </div>
                     ) : (
-                        <div className="w-full h-56 bg-gray-200 rounded-lg flex items-center justify-center text-gray-500">
+                        <div className="w-full h-full bg-gray-200 rounded-lg flex items-center justify-center text-gray-500">
                             No Trailer Available
                         </div>
                     )}
+
                 </div>
             </div>
 
