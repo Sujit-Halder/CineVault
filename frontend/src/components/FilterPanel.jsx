@@ -77,6 +77,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Sport">Sport</option>
                     <option value="Sword and Sorcery">Sword and Sorcery</option>
                     <option value="Survival">Survival</option>
+                    <option value="Surrealist">Surrealist</option>
                     <option value="Thriller">Thriller</option>
                     <option value="War">War</option>
                     <option value="Western">Western</option>
