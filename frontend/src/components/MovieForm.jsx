@@ -158,6 +158,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             onChange={handleChange}
                             required
                         >
+                            <option value="Art Film">🎨 Art Film</option>
                             <option value="Action">🔫 Action</option>
                             <option value="Adventure">🧭 Adventure</option>
                             <option value="Animation">🎨 Animation</option>

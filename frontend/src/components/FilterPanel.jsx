@@ -34,6 +34,7 @@ const FilterPanel = ({ filters, onChange }) => {
                 {/* Genre */}
                 <label className="block mb font-medium text-gray-700">Genre</label>
                 <select multiple value={filters.genre} onChange={(e) => handleMultiChange(e, 'genre')} className="border p-2 rounded">
+                    <option value="Art Film">Art Film</option>
                     <option value="Action">Action</option>
                     <option value="Adventure">Adventure</option>
                     <option value="Animation">Animation</option>
