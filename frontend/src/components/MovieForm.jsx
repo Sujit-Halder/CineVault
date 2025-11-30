@@ -171,6 +171,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Comedy">😂 Comedy</option>
                             <option value="Crime">🕵️ Crime</option>
                             <option value="Coming Of Age">🧒 Coming of Age</option>
+                            <option value="Christian">✝️ Christian</option>
                             <option value="Devotion">🙏 Devotion</option>
                             <option value="Dystopian">🧬 Dystopian</option>
                             <option value="Documentary">🎥 Documentary</option>
@@ -187,6 +188,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Monster">👹 Monster</option>
                             <option value="Musical">🎶 Musical</option>
                             <option value="Mystery">🔍 Mystery</option>
+                            <option value="Legal">⚖️ Legal</option>
                             <option value="LGBTQ">🏳️‍🌈 LGBTQ</option>
                             <option value="Vampire">🧛‍♂️ Vampire</option>
                             <option value="Superhero">🦸 Superhero</option>
