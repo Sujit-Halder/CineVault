@@ -47,7 +47,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Comedy">Comedy</option>
                     <option value="Crime">Crime</option>
                     <option value="Coming Of Age">Coming of Age</option>
-                    <option value="Christian">✝️ Christian</option>
+                    <option value="Christian">Christian</option>
                     <option value="Devotion">Devotion</option>
                     <option value="Dystopian">Dystopian</option>
                     <option value="Documentary">Documentary</option>
@@ -55,16 +55,20 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Disaster">Disaster</option>
                     <option value="Erotic">Erotic</option>
                     <option value="Epic">Epic</option>
+                    <option value="Experimental">Experimental Film</option>
                     <option value="Family">Family</option>
                     <option value="Fantasy">Fantasy</option>
                     <option value="Found Footage">Found Footage</option>
                     <option value="Historical">Historical</option>
+                    <option value="Heist">Heist</option>
                     <option value="Horror">Horror</option>
                     <option value="Gothic">Gothic</option>
                     <option value="Indie">Indie</option>
                     <option value="Musical">Musical</option>
                     <option value="Mystery">Mystery</option>
-                    <option value="Legal">⚖️ Legal</option>
+                    <option value="Neo-Noir">Neo-Noir</option>
+                    <option value="Popaganda">Popaganda</option>
+                    <option value="Legal">Legal</option>
                     <option value="LGBTQ">LGBTQ</option>
                     <option value="Vampire">Vampire</option>
                     <option value="Superhero">Superhero</option>
@@ -95,6 +99,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="English">English</option>
                     <option value="French">French</option>
                     <option value="Italian">Italian</option>
+                    <option value="Chinese">Chinese</option>
                     <option value="Thai">Thai</option>
                     <option value="Tagalog">Tagalog</option>
                 </select>

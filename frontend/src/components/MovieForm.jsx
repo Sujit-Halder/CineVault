@@ -178,16 +178,20 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Disaster">🌪️ Disaster</option>
                             <option value="Erotic">💋 Erotic</option>
                             <option value="Epic">👑 Epic</option>
+                            <option value="Experimental">🧪🎬 Experimental Film</option>
                             <option value="Family">👨‍👩‍👧‍👦 Family</option>
                             <option value="Fantasy">🧙 Fantasy</option>
                             <option value="Found Footage">📹 Found Footage</option>
                             <option value="Historical">🏰 Historical</option>
+                            <option value="Heist">🕵️‍♂️ Heist</option>
                             <option value="Horror">👻 Horror</option>
                             <option value="Gothic">🏰 Gothic</option>
                             <option value="Indie">🎬 Indie</option>
                             <option value="Monster">👹 Monster</option>
                             <option value="Musical">🎶 Musical</option>
                             <option value="Mystery">🔍 Mystery</option>
+                            <option value="Neo-Noir">🌃🕶️ Neo-Noir</option>
+                            <option value="Popaganda">📣🎬 Popaganda</option>
                             <option value="Legal">⚖️ Legal</option>
                             <option value="LGBTQ">🏳️‍🌈 LGBTQ</option>
                             <option value="Vampire">🧛‍♂️ Vampire</option>
@@ -269,8 +273,11 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="English">🇬🇧 English</option>
                                 <option value="French">🥖 French</option>   
                                 <option value="Italian">🍝 Italian</option>
+                                <option value="chinese">🇨🇳 Chinese</option>
                                 <option value="Thai">🐘 Thai</option>
                                 <option value="Tagalog">🌴 Tagalog</option>
+                                <option value="korean">🇰🇷 Korean</option>
+
                             </select>
                         </div>
                     )}
@@ -413,6 +420,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Finland">🇫🇮 Finland</option>
                                 <option value="Chile">🇨🇱 Chile</option>
                                 <option value="Czech Republic">🇨🇿 Czech Republic</option>
+                                <option value="Serbia">🇷🇸 Serbia</option>
                                 <option value="Portugal">🇵🇹 Portugal</option>
                                 <option value="Austria">🇦🇹 Austria</option>
                                 <option value="Greece">🇬🇷 Greece</option>
