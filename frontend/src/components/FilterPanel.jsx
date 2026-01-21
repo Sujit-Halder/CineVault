@@ -44,6 +44,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Biographical">Biographical</option>
                     <option value="Biblical">Biblical</option>
                     <option value="Body Horror">Body Horror</option>
+                    <option value="Buddy Cop">Buddy Cop</option>
                     <option value="Comedy">Comedy</option>
                     <option value="Crime">Crime</option>
                     <option value="Coming Of Age">Coming of Age</option>

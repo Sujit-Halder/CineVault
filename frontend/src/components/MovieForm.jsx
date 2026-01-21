@@ -168,6 +168,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Biblical">📖 Biblical</option>
                             <option value="Body Horror">🧟‍♂️ Body Horror</option>
                             <option value="Biographical">👤 Biographical</option>
+                            <option value="Buddy Cop">👮‍♂️🤝👮‍♀️ Buddy Cop</option>
                             <option value="Comedy">😂 Comedy</option>
                             <option value="Crime">🕵️ Crime</option>
                             <option value="Coming Of Age">🧒 Coming of Age</option>
@@ -445,6 +446,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Latvia">🇱🇻 Latvia</option>
                                 <option value="United Arab Emirates">🇦🇪 United Arab Emirates</option>
                                 <option value="Hong Kong">🇭🇰 Hong Kong</option>
+                                <option value="Luxembourg">🇱🇺 Luxembourg</option>
 
                             </select>
                         </div>
