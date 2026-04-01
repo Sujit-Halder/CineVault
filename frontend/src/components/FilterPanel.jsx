@@ -69,6 +69,8 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Mystery">Mystery</option>
                     <option value="Neo-Noir">Neo-Noir</option>
                     <option value="Popaganda">Popaganda</option>
+                    <option value="Period">Period</option>
+                    <option value="Psychological">Psychological</option>
                     <option value="Legal">Legal</option>
                     <option value="LGBTQ">LGBTQ</option>
                     <option value="Vampire">Vampire</option>
@@ -77,6 +79,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Monster">Monster</option>
                     <option value="Martial arts">Martial Arts</option>
                     <option value="Romance">Romance</option>
+                    <option value="Road Flim">Road Flim</option>
                     <option value="Zombie">Zombie</option>
                     <option value="Sex">Sex</option>
                     <option value="Spy">Spy</option>
@@ -87,8 +90,10 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Survival">Survival</option>
                     <option value="Surrealist">Surrealist</option>
                     <option value="Thriller">Thriller</option>
+                    <option value="Teen">Teen</option>
                     <option value="War">War</option>
                     <option value="Western">Western</option>
+                    <option value="Wuxia">Wuxia</option>
                     <option value="Anti-Western">Anti-Western</option>
                 </select>
 
