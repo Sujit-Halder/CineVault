@@ -201,6 +201,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Superhero">🦸 Superhero</option>
                             <option value="Supervillain">🦹‍♂️ Supervillain</option>
                             <option value="Martial arts">🥋 Martial Arts</option>
+                            <option value="Religious">🙏 Religious</option>
                             <option value="Romance">❤️ Romance</option>
                             <option value="Road Flim">🛣️ Road Flim</option>
                             <option value="Zombie">🧟 Zombie</option>
