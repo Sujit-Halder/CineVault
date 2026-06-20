@@ -3,7 +3,7 @@ import React from 'react';
 const Footer = () => {
     return (
         <div className="bg-white m-2 p-4 text-center rounded shadow-md">
-            <p className="text-gray-700">&copy; 2026 My Movie App</p>
+            <p className="text-gray-700">&copy; 2026 Movie Tracker App</p>
         </div>
     );
 };

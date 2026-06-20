@@ -223,7 +223,7 @@ const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
 
                         {movieData.productionCompany?.length > 0 && (
                             <p className="">
-                                <span className="text-gray-600">🏢 Producers:</span>{' '}
+                                <span className="text-gray-600">🏢 Producers / Production Companies:</span>{' '}
                                 <span className="text-indigo-600">{movieData.productionCompany}</span>
                             </p>
                         )}

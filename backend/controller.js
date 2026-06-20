@@ -23,10 +23,14 @@ exports.addMovie = async (req, res) => {
         const movies = await Model.getMovies();
 
         const newTitle = Model.normalizeTitle(movieData.title);
-        const duplicate = movies.find((m) => Model.normalizeTitle(m.title) === newTitle);
+        const duplicate = movies.find(
+            (m) =>
+                Model.normalizeTitle(m.title) === newTitle &&
+                m.releaseDate === movieData.releaseDate
+        );
 
         if (duplicate) {
-            return res.status(400).json({ message: 'A movie with this title already exists' });
+            return res.status(400).json({ message: 'A movie with this Title and Release Date  already exists' });
         }
 
         const newMovieData = {
@@ -119,8 +123,8 @@ exports.toggleFavorite = async (req, res) => {
         movies[index].favorite = !movies[index].favorite;
         await Model.saveMovies(movies);
 
-        logger.info(`Movie ${movies[index].title} is upgraded to favorite in the list`);
-        res.status(200).json({ message: `${movies[index].title} is upgraded to favorite now`, movies });
+        logger.info(`Movie ${movies[index].title} is ${movies[index].favorite ? "Up" : "De"}graded to favorite in the list`);
+        res.status(200).json({ message: `${movies[index].title} is ${movies[index].favorite ? "Up" : "De"}graded to favorite now`, movies });
     } catch (error) {
         logger.error(`Error during upgrading favorite: ${error.message}`);
         return res.status(500).json({ message: 'Server error', error: error.message });
