@@ -107,7 +107,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="English">English</option>
                     <option value="French">French</option>
                     <option value="Italian">Italian</option>
-                    <option value="Chinese">Chinese</option>
+                    <option value="Mandarin">Mandarin(Chinese)</option>
                     <option value="Thai">Thai</option>
                     <option value="Tagalog">Tagalog</option>
                 </select>

@@ -192,6 +192,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                             <option value="Musical">🎶 Musical</option>
                             <option value="Mystery">🔍 Mystery</option>
                             <option value="Masala">🌶️ Masala</option>
+                            <option value="Mythology">🏛️ Mythology</option>
                             <option value="Neo-Noir">🌃🕶️ Neo-Noir</option>
                             <option value="Popaganda">📣🎬 Popaganda</option>
                             <option value="Period">📜 Period</option>
@@ -282,7 +283,7 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="English">🇬🇧 English</option>
                                 <option value="French">🥖 French</option>   
                                 <option value="Italian">🍝 Italian</option>
-                                <option value="chinese">🇨🇳 Chinese</option>
+                                <option value="Mandarin">🇨🇳 Mandarin(Chinese)</option>
                                 <option value="Thai">🐘 Thai</option>
                                 <option value="Tagalog">🌴 Tagalog</option>
                                 <option value="korean">🇰🇷 Korean</option>
