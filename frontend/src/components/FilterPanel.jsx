@@ -25,6 +25,7 @@ const FilterPanel = ({ filters, onChange }) => {
                 {/* Status */}
                 <label className="block mb font-medium text-gray-700">Status</label>
                 <select value={filters.status} onChange={(e) => handleSingleChange(e, 'status')} className="border p-2 rounded">
+                    <option value="">All Statuses</option>
                     <option value="Announced">Announced</option>
                     <option value="Production Started">Production Started</option>
                     <option value="Trailer Only">Trailer Only</option>
@@ -112,6 +113,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Mandarin">Mandarin(Chinese)</option>
                     <option value="Thai">Thai</option>
                     <option value="Tagalog">Tagalog</option>
+                    <option value="Korean">Korean</option>
                 </select>
 
                 {/* Tags */}
@@ -152,6 +154,7 @@ const FilterPanel = ({ filters, onChange }) => {
                 {/* Rating */}
                 <label className="block mb font-medium text-gray-700">Rating</label>
                 <select value={filters.rating} onChange={(e) => handleSingleChange(e, 'rating')} className="border p-2 rounded">
+                    <option value="">Any Rating</option>
                     <option value="Rewatchable">Rewatchable</option>
                     <option value="Must Watch Again">Must Watch Again</option>
                     <option value="Content Less">Content Less</option>
@@ -160,6 +163,7 @@ const FilterPanel = ({ filters, onChange }) => {
                 {/* Award */}
                 <label className="block mb font-medium text-gray-700">Award</label>
                 <select value={filters.award} onChange={(e) => handleSingleChange(e, 'award')} className="border p-2 rounded">
+                    <option value="">Any Award</option>
                     <option value="Academy Award">Academy Award</option>
                     <option value="Golden Globe Award">Golden Globe Award</option>
                     <option value="BAFTA Award">BAFTA Award</option>

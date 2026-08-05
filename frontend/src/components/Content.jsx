@@ -73,7 +73,10 @@ const Content = ({ selectedMenu, searchTerm }) => {
   // Edit movie
   const handleEditMovie = async (movieDataEdited) => {
     const Movie = movies.find(movie => movie.id === movieDataEdited.id);
-    const isEqual = JSON.stringify(movieDataEdited) === JSON.stringify(Movie);
+
+    const { modification: _newMod, ...editedRest } = movieDataEdited;
+    const { modification: _oldMod, ...originalRest } = Movie || {};
+    const isEqual = JSON.stringify(editedRest) === JSON.stringify(originalRest);
 
     if (isEqual) {
       alert('Nothing to Update');
@@ -159,14 +162,18 @@ const Content = ({ selectedMenu, searchTerm }) => {
   });
 
   // Sorted movies
-  const sortedMovies = filteredMovies.sort((a, b) => {
+  const sortedMovies = [...filteredMovies].sort((a, b) => {
     let valA = a[sortType];
     let valB = b[sortType];
 
     const dateFields = ['creation', 'watchDate', 'releaseDate', 'modification'];
+
     if (dateFields.includes(sortType)) {
-      valA = new Date(valA);
-      valB = new Date(valB);
+      valA = Date.parse(valA);
+      valB = Date.parse(valB);
+
+      if (isNaN(valA)) valA = -Infinity;
+      if (isNaN(valB)) valB = -Infinity;
     }
 
     if (sortType === 'duration') {
@@ -175,8 +182,16 @@ const Content = ({ selectedMenu, searchTerm }) => {
     }
 
     if (sortType === 'title') {
-      valA = valA?.toLowerCase() || '';
-      valB = valB?.toLowerCase() || '';
+      valA = (valA || '').trim();
+      valB = (valB || '').trim();
+
+      const result = valA.localeCompare(valB, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+        ignorePunctuation: false
+      });
+
+      return orderType === 'ascending' ? result : -result;
     }
 
     if (valA < valB) return orderType === 'ascending' ? -1 : 1;
@@ -218,9 +233,8 @@ const Content = ({ selectedMenu, searchTerm }) => {
     <button
       key={page}
       onClick={() => setCurrentPage(page)}
-      className={`px-3 py-1 rounded ${
-        currentPage === page ? "bg-blue-600 text-white" : "bg-gray-300 hover:bg-gray-400"
-      }`}
+      className={`px-3 py-1 rounded ${currentPage === page ? "bg-blue-600 text-white" : "bg-gray-300 hover:bg-gray-400"
+        }`}
     >
       {page}
     </button>
@@ -294,7 +308,7 @@ const Content = ({ selectedMenu, searchTerm }) => {
       {paginatedMovies.length > 0 ? (
         paginatedMovies.map((movie, i) => (
           <MovieCard
-            key={i}
+            key={movie.id}
             movieData={movie}
             onEdit={handleEditForm}
             onDelete={handleDeleteMovie}

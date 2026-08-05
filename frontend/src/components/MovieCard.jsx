@@ -57,13 +57,13 @@ const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
         return `${day}${suffix} ${month} ${year}`;
     };
 
-    const formatTime = (time) => {
-        const [hours, minutes] = time.split(':');
-        const date = new Date();
-        date.setHours(hours);
-        date.setMinutes(minutes);
-        return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true });
-    };
+    // const formatTime = (time) => {
+    //     const [hours, minutes] = time.split(':');
+    //     const date = new Date();
+    //     date.setHours(hours);
+    //     date.setMinutes(minutes);
+    //     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true });
+    // };
 
     const formatDateTime = (dateTime) => {
         const parsedDateTime = new Date(dateTime);
@@ -77,6 +77,18 @@ const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
         const formattedTime = parsedDateTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true });
 
         return `${formattedDate}, ${formattedTime}`;
+    };
+
+    const getYouTubeId = (url) => {
+        try {
+            const parsed = new URL(url);
+            if (parsed.hostname.includes('youtu.be')) {
+                return parsed.pathname.slice(1);
+            }
+            return parsed.searchParams.get('v');
+        } catch {
+         return null;
+        }
     };
 
     return (
@@ -314,7 +326,7 @@ const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
                         <div className="relative w-full h-full rounded-lg overflow-hidden">
                             {/* Thumbnail */}
                             <img
-                                src={`https://img.youtube.com/vi/${movieData.trailerUrl.split("v=")[1]}/hqdefault.jpg`}
+                                src={`https://img.youtube.com/vi/${getYouTubeId(movieData.trailerUrl)}/hqdefault.jpg`}
                                 alt={`Trailer thumbnail for ${movieData.title}`}
                                 className="w-full h-full object-cover"
                                 loading="lazy"
@@ -327,7 +339,7 @@ const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
                                     container.innerHTML = `
           <iframe
             class="w-full h-full rounded-lg"
-            src="${movieData.trailerUrl.replace("watch?v=", "embed/")}?autoplay=1"
+            src="https://www.youtube.com/embed/${getYouTubeId(movieData.trailerUrl)}?autoplay=1"
             title="Trailer for ${movieData.title}"
             allowfullscreen
           ></iframe>

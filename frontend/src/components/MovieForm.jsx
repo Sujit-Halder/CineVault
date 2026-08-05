@@ -71,14 +71,11 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (initialData) {
-            form.modification = new Date();
-        }
-        else {
-            form.creation = new Date();
-            form.modification = form.creation;
-        }
-        onSubmit(form);
+        const now = new Date();
+        const finalForm = initialData
+           ? { ...form, modification: now }
+           : { ...form, creation: now, modification: now };
+        onSubmit(finalForm);
         onClose();
     }
 
@@ -288,7 +285,8 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Mandarin">🇨🇳 Mandarin(Chinese)</option>
                                 <option value="Thai">🐘 Thai</option>
                                 <option value="Tagalog">🌴 Tagalog</option>
-                                <option value="korean">🇰🇷 Korean</option>
+                                <option value="Korean">🇰🇷 Korean</option>
+                                <option value="Spanish">💃 Spanish</option>
 
                             </select>
                         </div>
@@ -430,7 +428,6 @@ const MovieForm = ({ onClose, onSubmit, initialData }) => {
                                 <option value="Denmark">🇩🇰 Denmark</option>
                                 <option value="Norway">🇳🇴 Norway</option>
                                 <option value="Finland">🇫🇮 Finland</option>
-                                <option value="Chile">🇨🇱 Chile</option>
                                 <option value="Czech Republic">🇨🇿 Czech Republic</option>
                                 <option value="Serbia">🇷🇸 Serbia</option>
                                 <option value="Portugal">🇵🇹 Portugal</option>

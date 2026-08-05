@@ -47,7 +47,7 @@ const Navbar = ({ menu, onSearch }) => {
                             name="search"
                             type="text"
                             placeholder="Search your movie based on title cast director country production company..."
-                            className="pl-10 pr-4 py-2 rounded-lg border text-sm w-200 focus:w-204 transition-all duration-300 text-black"
+                            className="pl-10 pr-4 py-2 rounded-lg border text-sm w-[500px] focus:w-[520px] transition-all duration-300 text-black"
                             onChange={(e) => onSearch(e.target.value.trim().toLowerCase())}
                         />
                     </div>
