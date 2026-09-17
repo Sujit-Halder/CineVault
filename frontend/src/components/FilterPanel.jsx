@@ -66,6 +66,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Horror">Horror</option>
                     <option value="Gothic">Gothic</option>
                     <option value="Indie">Indie</option>
+                    <option value="Television">Made-for-Television</option>
                     <option value="Musical">Musical</option>
                     <option value="Mystery">Mystery</option>
                     <option value="Masala">Masala</option>
@@ -79,6 +80,7 @@ const FilterPanel = ({ filters, onChange }) => {
                     <option value="Vampire">Vampire</option>
                     <option value="Superhero">Superhero</option>
                     <option value="Supervillain">Supervillain</option>
+                    <option value="South-Seas">South Seas</option>
                     <option value="Monster">Monster</option>
                     <option value="Martial arts">Martial Arts</option>
                     <option value="religious">Religious</option>
