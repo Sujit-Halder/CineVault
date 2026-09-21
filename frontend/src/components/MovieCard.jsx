@@ -1,389 +1,122 @@
-import React, { useState, useEffect } from 'react';
-import { FaEdit, FaTrash, FaHeart, FaRegHeart, FaInfoCircle } from 'react-icons/fa';
+import React, { useState } from 'react';
+import { FaEdit, FaHeart, FaPlay, FaRegHeart, FaTrash, FaTrashRestore } from 'react-icons/fa';
 
-const MovieCard = ({ movieData, onEdit, onDelete, onToggleFavorite }) => {
-    const [isHovered, setIsHovered] = useState(false);
-    const [isTouchDevice, setIsTouchDevice] = useState(false);
+// Extracts a supported YouTube video identifier from a trailer URL.
+function getYouTubeId(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes('youtu.be')) return parsed.pathname.slice(1);
+    if (parsed.pathname.includes('/shorts/')) return parsed.pathname.split('/shorts/')[1];
+    return parsed.searchParams.get('v');
+  } catch { return null; }
+}
 
+// Formats an ISO date using the viewer's locale.
+function formatDate(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle:'medium' }).format(date);
+}
 
-    // Inside your MovieCard component...
+// Converts a stored ISO country code into the viewer's localized country name.
+function countryName(code) {
+  try { return new Intl.DisplayNames(undefined,{ type:'region' }).of(code) || code; } catch { return code; }
+}
 
-    const [showFullSummary, setShowFullSummary] = useState(false);
+// Formats the elapsed calendar time since a viewing record.
+function relativeWatchTime(value) {
+  const days = Math.max(0,Math.floor((Date.now() - new Date(value).getTime()) / 86400000));
+  if (days === 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 30) return `${days} days ago`;
+  if (days < 365) return `${Math.floor(days / 30)} months ago`;
+  return `${Math.floor(days / 365)} years ago`;
+}
 
-    const toggleSummary = () => setShowFullSummary(!showFullSummary);
+// Maps rating codes from supported territories to a shared maturity level.
+function ratingLevel(rating = {}) {
+  const normalized = String(rating.code || '').toUpperCase().replace(/\s+/g, ' ').trim();
+  if (rating.territory === 'IND' || rating.territory === 'IN') {
+    if (normalized === 'A' || normalized === 'S') return 5;
+  }
+  const levels = {
+    'G':1,'U':1,'L':1,'T':1,'ALL':1,'FSK 0':1,'TOUS PUBLICS':1,'A':1,
+    'PG':2,'TV-Y':1,'TV-Y7':2,'TV-G':1,'6+':2,'7':2,'10':2,'FSK 6':2,'AA':1,
+    'PG-13':3,'TV-PG':2,'TV-14':3,'12':3,'12A':3,'12+':3,'UA 7+':2,'UA 13+':3,'M':3,'14A':3,'B':3,'B15':3,'FSK 12':3,'PG12':3,'14':3,
+    'R':4,'TV-MA':4,'15':4,'16':4,'16+':4,'18A':4,'MA 15+':4,'UA 16+':4,'FSK 16':4,'R15+':4,'19':4,'C':4,'-16':4,
+    'NC-17':5,'18':5,'18+':5,'R18':5,'R 18+':5,'X 18+':5,'FSK 18':5,'R18+':5,'RESTRICTED':5,'D':5,'X':5,'-18':5,'S':5,'RC':5,
+  };
+  return levels[normalized] || 0;
+}
 
-    // Extract release year from releaseDate (if present and valid)
-    const getReleaseYear = (date) => {
-        const parsed = new Date(date);
-        return !isNaN(parsed) ? parsed.getFullYear() : null;
-    };
+// Returns the visual tone for the most restrictive rating on a content item.
+function ratingTone(ratings = []) {
+  const highest = ratings.reduce((level, rating) => Math.max(level, ratingLevel(rating)), 0);
+  return ['unrated','general','guidance','teen','mature','restricted'][highest];
+}
 
-    const releaseYear = movieData.releaseDate ? getReleaseYear(movieData.releaseDate) : null;
-    const summaryLimit = 200; // characters to show before truncation
-    const isLongSummary = movieData.summary && movieData.summary.length > summaryLimit;
+// Presents one movie or series with media, metadata, and primary actions.
+const MovieCard = ({ movieData, catalogs, trashed = false, onEdit, onDelete, onToggleFavorite, onRestore, onPermanentDelete }) => {
+  const [playing, setPlaying] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const trailerId = getYouTubeId(movieData.trailerUrl);
+  const ratings = movieData.contentRatings || [];
+  const animatedContent=movieData.presentationForms?.some((item) => ['Animation','Anime','Adult Animation','Stop Motion'].includes(item));
+  const sourceLabel=(method) => catalogs?.watchSources?.find((source) => source.id === method)?.label || method;
+  const tone = ratingTone(ratings);
+  const seriesEpisodes=movieData.seasons?.flatMap((season) => season.episodes || []) || [];
+  const seriesWatchHistory=seriesEpisodes.flatMap((episode) => episode.watchHistory || []).sort((a,b) => new Date(b.watchedAt) - new Date(a.watchedAt));
+  const effectiveWatchHistory=movieData.type === 'series' ? seriesWatchHistory : (movieData.watchHistory || []);
+  const latestWatch=effectiveWatchHistory[0]?.watchedAt;
+  const watchedEpisodes=seriesEpisodes.filter((episode) => episode.watchHistory?.length > 0).length;
+  const seriesWatchCount=seriesEpisodes.length > 0 ? Math.min(...seriesEpisodes.map((episode) => episode.watchHistory?.length || 0)) : 0;
+  const seriesRuntime=seriesEpisodes.reduce((total,episode) => total + (Number(episode.duration) || 0),0);
+  const displayRuntime=movieData.type === 'series' ? seriesRuntime : Number(movieData.duration || 0);
 
-    useEffect(() => {
-        const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-        setIsTouchDevice(isTouch);
-    }, []);
-
-    const handleHover = (state) => {
-        if (!isTouchDevice) {
-            setIsHovered(state);
-        }
-    };
-
-    const formatDate = (date) => {
-        const parsedDate = new Date(date);
-
-        if (isNaN(parsedDate)) {
-            console.error(`Invalid date: ${date}`);
-            return date;
-        }
-
-        const day = parsedDate.getDate();
-        const month = parsedDate.toLocaleString('en-US', { month: 'long' });
-        const year = parsedDate.getFullYear();
-
-        const suffix =
-            day % 10 === 1 && day !== 11
-                ? 'st'
-                : day % 10 === 2 && day !== 12
-                    ? 'nd'
-                    : day % 10 === 3 && day !== 13
-                        ? 'rd'
-                        : 'th';
-
-        return `${day}${suffix} ${month} ${year}`;
-    };
-
-    // const formatTime = (time) => {
-    //     const [hours, minutes] = time.split(':');
-    //     const date = new Date();
-    //     date.setHours(hours);
-    //     date.setMinutes(minutes);
-    //     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true });
-    // };
-
-    const formatDateTime = (dateTime) => {
-        const parsedDateTime = new Date(dateTime);
-
-        if (isNaN(parsedDateTime)) {
-            console.error(`Invalid dateTime: ${dateTime}`);
-            return dateTime;
-        }
-
-        const formattedDate = formatDate(parsedDateTime);
-        const formattedTime = parsedDateTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true });
-
-        return `${formattedDate}, ${formattedTime}`;
-    };
-
-    const getYouTubeId = (url) => {
-        try {
-            const parsed = new URL(url);
-            if (parsed.hostname.includes('youtu.be')) {
-                return parsed.pathname.slice(1);
-            }
-            return parsed.searchParams.get('v');
-        } catch {
-         return null;
-        }
-    };
-
-    return (
-        <div
-            className={`relative bg-white p-4 rounded-xl shadow-md transition duration-300 transform-gpu 
-            ${isHovered ? 'ring-2 ring-blue-400 shadow-xl -translate-y-1' : 'ring-0 translate-y-0'}
-          `}
-            onMouseEnter={() => handleHover(true)}
-            onMouseLeave={() => handleHover(false)}
-            onClick={() => isTouchDevice && setIsHovered(!isHovered)}
-        >
-
-            {/* Responsive layout container */}
-            <div className="flex flex-col lg:flex-row gap-4">
-                {/* Poster Image */}
-                <div className="lg:w-1/4 w-full flex justify-center items-center">
-                    {movieData.posterUrl ? (
-                        <img
-                            src={movieData.posterUrl}
-                            alt={movieData.title}
-                            className="rounded-lg object-cover max-h-full w-full"
-                            loading="lazy"
-                        />
-                    ) : (
-                        <div className="w-full h-64 bg-gray-200 rounded-lg flex items-center justify-center text-gray-500">
-                            No Poster Available
-                        </div>
-                    )}
-                </div>
-
-                {/* Movie Details */}
-                <div className="flex-1 space-y-2 text-gray-800 ">
-                    {/* Title + Tags + Favorite + Status */}
-                    <div className="flex flex-wrap items-center gap-4">
-                        <h3
-                            className={`text-2xl font-extrabold text-gray-900 ${movieData.favorite ? 'text-green-600' : ''
-                                } flex items-center gap-2`}
-                        >
-                            🎬 {movieData.title}
-                            {releaseYear && (
-                                <span className="text-sm text-gray-500 font-medium">({releaseYear})</span>
-                            )}
-                            <FaInfoCircle
-                                className="text-blue-400 hover:text-blue-600 cursor-pointer"
-                                title="Movie title with release year"
-                            />
-                        </h3>
-
-                        {/* Tags */}
-                        {movieData.tags?.length > 0 && (
-                            <div className="flex flex-wrap gap-2">
-                                {movieData.tags.map((tag, index) => (
-                                    <span
-                                        key={index}
-                                        className="px-3 py-1 text-xs font-medium bg-blue-100 text-blue-700 rounded-full shadow-sm"
-                                    >
-                                        #{tag.toLowerCase().replace(/\s+/g, '_')}
-                                    </span>
-                                ))}
-                            </div>
-                        )}
-
-                        {/* Favorite */}
-                        <button
-                            onClick={() => onToggleFavorite(movieData.id)}
-                            className={`text-xl transition-transform duration-200 hover:scale-110 ${movieData.favorite ? 'text-red-500' : 'text-gray-400'
-                                }`}
-                            title={movieData.favorite ? 'Unfavorite' : 'Mark as Favorite'}
-                            aria-label="Toggle Favorite"
-                        >
-                            {movieData.favorite ? <FaHeart /> : <FaRegHeart />}
-                        </button>
-
-                        {/* Status */}
-                        {movieData.status && (
-                            <div className="px-3 py-1 text-sm font-medium bg-red-400 text-white rounded-full shadow-md">
-                                {movieData.status}
-                            </div>
-                        )}
-                    </div>
-                    <div className='flex flex-row flex-wrap space-x-4 space-y-2 font-bold text-lg items-center'>
-                        {movieData.releaseDate && (
-                            <p className="">
-                                <span className="text-gray-600">🎬 Release Date:</span>{' '}
-                                <span className="text-blue-700">{formatDate(movieData.releaseDate)}</span>
-                            </p>
-                        )}
-
-                        {movieData.genres?.length > 0 && (
-                            <p className="">
-                                <span className="text-gray-600">🎭 Genres:</span>{' '}
-                                <span className="text-indigo-700">{movieData.genres.join(', ')}</span>
-                            </p>
-                        )}
-
-                        {movieData.language?.length > 0 && (
-                            <p className="">
-                                <span className="text-gray-600">🗣️ Languages:</span>{' '}
-                                <span className="text-purple-700">{movieData.language.join(', ')}</span>
-                            </p>
-                        )}
-
-                        {movieData.duration && (
-                            <p className="">
-                                <span className="text-gray-600">⏱ Duration:</span>{' '}
-                                <span className="text-green-700">{movieData.duration} min</span>
-                            </p>
-                        )}
-
-                        {movieData.director && (
-                            <p className="">
-                                <span className="text-gray-600">🎬 Director:</span>{' '}
-                                <span className="text-rose-700">{movieData.director}</span>
-                            </p>
-                        )}
-
-                        {movieData.rating && (
-                            <p className="">
-                                <span className="text-gray-600">⭐ Rating:</span>{' '}
-                                <span className="text-yellow-600">{movieData.rating}</span>
-                            </p>
-                        )}
-
-                        {movieData.awards?.length > 0 && (
-                            <p className="">
-                                <span className="text-gray-600">🏆 Awards:</span>{' '}
-                                <span className="text-orange-600">{movieData.awards.join(', ')}</span>
-                            </p>
-                        )}
-
-                        {movieData.casts && (
-                            <p className="">
-                                <span className="text-gray-600">🎭 Cast:</span>{' '}
-                                <span className="text-gray-800">{movieData.casts}</span>
-                            </p>
-                        )}
-
-                        {movieData.countryOfOrigin?.length > 0 && (
-                            <p className="">
-                                <span className="text-gray-600">🗺️ Country:</span>{' '}
-                                <span className="text-blue-800">{movieData.countryOfOrigin.join(', ')}</span>
-                            </p>
-                        )}
-
-                        {movieData.productionCompany?.length > 0 && (
-                            <p className="">
-                                <span className="text-gray-600">🏢 Producers / Production Companies:</span>{' '}
-                                <span className="text-indigo-600">{movieData.productionCompany}</span>
-                            </p>
-                        )}
-
-                        {movieData.contentRating?.length > 0 && (
-                            <p className="">
-                                <span className="text-gray-600">🔴 Ratings:</span>{' '}
-                                <span className="text-red-600">{movieData.contentRating.join(', ')}</span>
-                            </p>
-                        )}
-
-                        {movieData.sourceOfWatch?.length > 0 && (
-                            <p className="">
-                                <span className="text-gray-600">📡▶️ Source:</span>{' '}
-                                <span className="text-cyan-700">{movieData.sourceOfWatch.join(', ')}</span>
-                            </p>
-                        )}
-
-                        {movieData.sourceReference && (
-                            <p className="">
-                                <span className="text-gray-600">🔗 Source:</span>{' '}
-                                {movieData.sourceReference
-                                    .split(',')
-                                    .map((ref, idx, arr) => {
-                                        const trimmedRef = ref.trim();
-                                        const isLink = trimmedRef.startsWith('http://') || trimmedRef.startsWith('https://');
-
-                                        return (
-                                            <span key={idx}>
-                                                {isLink ? (
-                                                    <a
-                                                        href={trimmedRef}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        className="text-blue-600 hover:underline break-all"
-                                                    >
-                                                        {trimmedRef}
-                                                    </a>
-                                                ) : (
-                                                    <span className="text-gray-700">{trimmedRef}</span>
-                                                )}
-                                                {/* Add separator ' | ' between items except the last */}
-                                                {idx < arr.length - 1 && <span className="text-gray-400"> | </span>}
-                                            </span>
-                                        );
-                                    })}
-                            </p>
-                        )}
-
-
-                    </div>
-
-                    {/* Summary Section with Toggle */}
-                    {movieData.summary && (
-                        <div className="mt-4 bg-gray-100 rounded-lg p-3 shadow-inner">
-                            <p className="font-semibold text-gray-700 mb-1">📝 Summary:</p>
-                            <p className="text-sm text-gray-800 text-justify leading-relaxed">
-                                {isLongSummary && !showFullSummary
-                                    ? `${movieData.summary.slice(0, summaryLimit)}...`
-                                    : movieData.summary}
-                            </p>
-                            {isLongSummary && (
-                                <button
-                                    onClick={toggleSummary}
-                                    className="text-blue-600 text-xs mt-1 hover:underline focus:outline-none"
-                                >
-                                    {showFullSummary ? 'Show Less ▲' : 'Read More ▼'}
-                                </button>
-                            )}
-                        </div>
-                    )}
-                    <div className='flex flex-row gap-4 pt-2'>
-                        {movieData.creation && (
-                            <p className="text-xs text-gray-400">📅 Created: {formatDateTime(movieData.creation)}</p>
-                        )}
-                        {movieData.modification && (
-                            <p className="text-xs text-gray-400">📅 Modified: {formatDateTime(movieData.modification)}</p>
-                        )}
-                        {movieData.watchDate && (
-                            <p className="text-xs text-gray-400">📅 Watched: {formatDate(movieData.watchDate)}</p>
-                        )}
-                    </div>
-                </div>
-
-                {/* Trailer Video */}
-                <div className="lg:w-1/3 w-full flex justify-center items-center">
-                    {movieData.trailerUrl ? (
-                        <div className="relative w-full h-full rounded-lg overflow-hidden">
-                            {/* Thumbnail */}
-                            <img
-                                src={`https://img.youtube.com/vi/${getYouTubeId(movieData.trailerUrl)}/hqdefault.jpg`}
-                                alt={`Trailer thumbnail for ${movieData.title}`}
-                                className="w-full h-full object-cover"
-                                loading="lazy"
-                            />
-
-                            {/* Play Button Overlay */}
-                            <button
-                                onClick={(e) => {
-                                    const container = e.currentTarget.parentElement;
-                                    container.innerHTML = `
-          <iframe
-            class="w-full h-full rounded-lg"
-            src="https://www.youtube.com/embed/${getYouTubeId(movieData.trailerUrl)}?autoplay=1"
-            title="Trailer for ${movieData.title}"
-            allowfullscreen
-          ></iframe>
-        `;
-                                }}
-                                className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-40 text-white text-3xl"
-                            >
-                                ▶
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="w-full h-full bg-gray-200 rounded-lg flex items-center justify-center text-gray-500">
-                            No Trailer Available
-                        </div>
-                    )}
-
-                </div>
-            </div>
-
-            {/* Hover Edit/Delete Buttons */}
-            {isHovered && (
-                <div className="absolute top-3 right-14 flex space-x-2 opacity-100 transition-opacity duration-300">
-                    <button
-                        className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 shadow-md transition-transform duration-300 hover:scale-110"
-                        onClick={() => onEdit(movieData)}
-                        aria-label="Edit movie"
-                        title="Edit movie"
-                    >
-                        <FaEdit />
-                    </button>
-
-                    <button
-                        className="p-2 bg-red-500 text-white rounded-full hover:bg-red-600 shadow-md transition-transform duration-300 hover:scale-110"
-                        onClick={() => onDelete(movieData.id)}
-                        aria-label="Delete movie"
-                        title="Delete movie"
-                    >
-                        <FaTrash />
-                    </button>
-                </div>
-            )}
+  return (
+    <article className={`media-card rating-${tone}`} id={`title-${movieData.id}`}>
+      <div className="poster-column">
+        {movieData.posterUrl ? <img src={movieData.posterUrl} alt={`${movieData.title} poster`} loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} /> : <div className="poster-placeholder">No poster</div>}
+        <span className="type-badge">{movieData.type} · {movieData.subtype}</span>
+      </div>
+      <div className="card-information">
+        <div className="title-line">
+          <div><h3>{movieData.title}</h3><div className="lifecycle-line" aria-label={`Production ${movieData.productionStatus}; release ${movieData.releaseStatus}; viewing ${movieData.viewingStatus}`}><span className="production-state" title={`Production status: ${movieData.productionStatus}`}><i aria-hidden="true" />{movieData.productionStatus}</span><span className="release-state" title={`Release status: ${movieData.releaseStatus}`}><i aria-hidden="true" />{movieData.releaseStatus}</span><span className="viewing-state" title={`Viewing status: ${movieData.viewingStatus}; calculated from saved watch dates`}><i aria-hidden="true" />{movieData.viewingStatus}</span></div></div>
+          {!trashed && <button className="icon-action favorite" onClick={onToggleFavorite} aria-label="Toggle favorite" title={movieData.favorite ? 'Remove from favorites' : 'Add to favorites'}>{movieData.favorite ? <FaHeart /> : <FaRegHeart />}</button>}
         </div>
-    );
-
+        <div className="metadata-row">
+          {movieData.releaseDate && <span title={`${movieData.type === 'series' ? 'Series' : 'Movie'} release date: ${formatDate(movieData.releaseDate)}`}>{formatDate(movieData.releaseDate)}</span>}
+          {latestWatch && movieData.type === 'movie' && <span title={`${effectiveWatchHistory.length} recorded movie watch${effectiveWatchHistory.length === 1 ? '' : 'es'}; latest at ${new Date(latestWatch).toLocaleString()}`}>Watched {effectiveWatchHistory.length}× · {formatDate(latestWatch)} · {relativeWatchTime(latestWatch)}</span>}
+          {latestWatch && movieData.type === 'series' && <span title={`Latest episode watch: ${new Date(latestWatch).toLocaleString()}`}>Last episode watched {formatDate(latestWatch)} · {relativeWatchTime(latestWatch)}</span>}
+          {displayRuntime > 0 && <span title={movieData.type === 'series' ? 'Sum of the runtimes of all existing episodes' : 'Movie runtime'}>{displayRuntime} min</span>}
+          {movieData.language?.map((language) => <span key={language} title={`Language: ${language}`}>{language}</span>)}
+          {movieData.countryOfOrigin?.map((country) => <span key={country} title={`Origin country: ${countryName(country)} (${country})`}>{countryName(country)}</span>)}
+          {ratings.map((rating, index) => <span title={`${rating.system || 'Official content rating'} · ${rating.territory} ${rating.code}`} key={`${rating.territory}-${rating.code}-${index}`}>{rating.territory} {rating.code}</span>)}
+        </div>
+        {(movieData.presentationForms?.length > 0 || movieData.genres?.length > 0) && <div className="genre-row classification-row">{movieData.presentationForms?.map((item) => <span className="presentation-form" key={`form-${item}`} title={`Presentation form: ${item}`}>{item}</span>)}{movieData.genres?.map((genre) => <span key={`genre-${genre}`} title={`Genre: ${genre}`}>{genre}</span>)}</div>}
+        {movieData.tags?.length > 0 && <div className="tag-row">{movieData.tags.map((tag) => <span key={tag}>#{tag.toLowerCase().replace(/\s+/g, '_')}</span>)}</div>}
+        {movieData.type === 'movie' && movieData.director && <p><strong>Director(s)</strong> {movieData.director}</p>}
+        {movieData.type === 'series' && movieData.seriesCredits?.length > 0 && <p title="Credits applying to the complete series"><strong>Series credits</strong> {movieData.seriesCredits.map((credit) => `${credit.name} · ${credit.role}`).join(' | ')}</p>}
+        {movieData.type === 'series' && movieData.seriesNetwork && <p><strong>Network</strong> {movieData.seriesNetwork}</p>}
+        {movieData.watchSources?.length > 0 && <p><strong>Watched via</strong> {movieData.watchSources.map((source) => `${sourceLabel(source.method)}${source.provider ? ` · ${source.provider}` : ''}`).join(' | ')}</p>}
+        {movieData.casts && <p><strong>{animatedContent ? 'Voice Cast' : 'Cast'}</strong> {movieData.casts}</p>}
+        {movieData.rating && <p><strong>special rating</strong> {movieData.rating}</p>}
+        {movieData.awards?.length > 0 && <p><strong>Award</strong> {movieData.awards.join(' · ')}</p>}
+        {movieData.contentLinks?.length > 0 && <div className="content-links"><strong>Search in</strong>{movieData.contentLinks.map((link) => <a key={link.id || link.url} href={link.url} target="_blank" rel="noreferrer" title={link.url}>{link.domain}</a>)}</div>}
+        {movieData.summary && <div className="summary"><p>{expanded ? movieData.summary : `${movieData.summary.slice(0, 220)}${movieData.summary.length > 220 ? '…' : ''}`}</p>{movieData.summary.length > 220 && <button onClick={() => setExpanded((value) => !value)}>{expanded ? 'Show less' : 'Read more'}</button>}</div>}
+        {movieData.type === 'series' && <p className="series-summary" title="A complete series watch is counted only when every existing episode has been watched once"><strong>{movieData.seasons?.length || 0}</strong> seasons · <strong>{seriesEpisodes.length}</strong> episodes{watchedEpisodes > 0 && <> · <strong>{watchedEpisodes}</strong> watched</>}{seriesWatchCount > 0 && <> · series watched <strong>{seriesWatchCount}×</strong></>}</p>}
+        {movieData.type === 'series' && movieData.seriesStartDate && <p className="series-dates"><strong>Run</strong> {formatDate(movieData.seriesStartDate)} — {movieData.seriesContinuing ? 'Ongoing' : movieData.seriesEndDate ? formatDate(movieData.seriesEndDate) : 'End date unknown'}</p>}
+        {trashed && movieData.deletedAt && <p className="trash-date"><strong>Trashed</strong> {formatDate(movieData.deletedAt)}</p>}
+        <small>Updated {formatDate(movieData.modification)}</small>
+      </div>
+      <div className="trailer-column">
+        {trailerId ? playing ? <iframe src={`https://www.youtube.com/embed/${trailerId}?autoplay=1`} title={`${movieData.title} trailer`} allow="autoplay; encrypted-media; picture-in-picture" allowFullScreen /> : (
+          <button className="trailer-preview" onClick={() => setPlaying(true)} title="Play the embedded trailer"><img src={`https://img.youtube.com/vi/${trailerId}/hqdefault.jpg`} alt="" /><span><FaPlay /> Play trailer</span></button>
+        ) : <div className="trailer-placeholder">Trailer unavailable</div>}
+        <div className="card-actions">{trashed ? <><button onClick={onRestore} title="Return this entry to the library"><FaTrashRestore /> Restore</button><button className="danger" onClick={onPermanentDelete} title="Permanently delete this entry after creating a recovery backup"><FaTrash /> Delete forever</button></> : <><button onClick={onEdit} title="Edit this library entry"><FaEdit /> Edit</button><button className="danger" onClick={onDelete} title="Move this entry to recoverable trash"><FaTrash /> Trash</button></>}</div>
+      </div>
+    </article>
+  );
 };
 
 export default MovieCard;

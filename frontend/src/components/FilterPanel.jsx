@@ -1,221 +1,65 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { FaBookmark, FaTimes } from 'react-icons/fa';
+import MultiSelect from './MultiSelect';
+import RemoteCompanySelect from './RemoteCompanySelect';
+import { MOVIE_RELEASE_STATUSES,MOVIE_VIEWING_STATUSES,PRODUCTION_STATUSES,SERIES_RELEASE_STATUSES,SERIES_VIEWING_STATUSES } from '../statusOptions';
 
-const FilterPanel = ({ filters, onChange }) => {
-    const handleMultiChange = (e, name) => {
-        const selected = Array.from(e.target.selectedOptions).map(opt => opt.value);
-        onChange({ ...filters, [name]: selected });
-    };
+// Presents library filters in an accessible slide-over panel.
+const FilterPanel = ({ filters, catalogs, awards, tags, ratings, lockedViewingStatus, lockedType, onChange, onClose }) => {
+  const [presets,setPresets]=useState(() => { try { return JSON.parse(localStorage.getItem('cinevault-filter-presets') || '{}'); } catch { return {}; } });
+  const drawerRef=useRef(null);
 
-    const handleSingleChange = (e, name) => {
-        let value = e.target.value;
+  useEffect(() => { const previous=document.activeElement; drawerRef.current?.focus(); const key=(event) => { if (event.key === 'Escape') onClose(); if (event.key === 'Tab') { const controls=[...drawerRef.current.querySelectorAll('button,input,select,textarea,a[href]')].filter((item) => !item.disabled); if (!controls.length) return; const first=controls[0]; const last=controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } } }; window.addEventListener('keydown',key); return () => { window.removeEventListener('keydown',key); previous?.focus(); }; },[onClose]);
+  const countryOptions = catalogs.countries.map((country) => ({ value:country.code, label:`${country.name} (${country.code})` }));
+  const languageOptions = ['Arabic','Bengali','Chinese','English','French','German','Hindi','Italian','Japanese','Korean','Portuguese','Russian','Spanish','Tamil','Telugu','Thai'].map((value) => ({ value,label:value }));
+  const optionList = (values) => values.map((value) => ({ value,label:value }));
+  const currentYear = new Date().getFullYear();
+  const releaseYears = Array.from({ length:currentYear + 5 - 1888 + 1 },(_,index) => currentYear + 5 - index);
+  const effectiveType = lockedType || filters.type;
+  const movieSubtypes = catalogs.subtypes?.movie || [];
+  const seriesSubtypes = catalogs.subtypes?.series || [];
+  const sourceOptions = catalogs.watchSources.map((source) => ({ value:source.id,label:source.label }));
 
-        if (e.target.type === 'number') {
-            value = parseFloat(value);
-            if (value < 0) {
-                value = 1;
-            }
-        }
+  // Updates one filter while preserving all other filter selections.
+  const update = (name, value) => onChange({ ...filters, [name]:value });
 
-        onChange({ ...filters, [name]: value });
-    };
+  // Restores every filter to its neutral state.
+  const clear = () => onChange({ type:'',subtype:'',productionStatus:'',releaseStatus:'',viewingStatus:'',genres:[],presentationForms:[],languages:[],tags:[],rating:'',awards:[],countries:[],releaseYear:'',productionCompanies:[],watchSources:[],linkDomains:[] });
 
-    return (
-        <div className="absolute top-full right-0 mt-1 bg-white border rounded shadow-lg p-4 z-50 w-90">
-            <div className="flex flex-col flex-wrap gap-1">
-                {/* Status */}
-                <label className="block mb font-medium text-gray-700">Status</label>
-                <select value={filters.status} onChange={(e) => handleSingleChange(e, 'status')} className="border p-2 rounded">
-                    <option value="">All Statuses</option>
-                    <option value="Announced">Announced</option>
-                    <option value="Production Started">Production Started</option>
-                    <option value="Trailer Only">Trailer Only</option>
-                    <option value="Released">Released</option>
-                    <option value="Watched">Watched</option>
-                </select>
-                {/* Genre */}
-                <label className="block mb font-medium text-gray-700">Genre</label>
-                <select multiple value={filters.genre} onChange={(e) => handleMultiChange(e, 'genre')} className="border p-2 rounded">
-                    <option value="Art Film">Art Film</option>
-                    <option value="Action">Action</option>
-                    <option value="Adventure">Adventure</option>
-                    <option value="Animation">Animation</option>
-                    <option value="Apocalyptic">Apocalyptic</option>
-                    <option value="Absurdist">Absurdist</option>
-                    <option value="Anthology">Anthology</option>
-                    <option value="Biographical">Biographical</option>
-                    <option value="Biblical">Biblical</option>
-                    <option value="Body Horror">Body Horror</option>
-                    <option value="Buddy Cop">Buddy Cop</option>
-                    <option value="Comedy">Comedy</option>
-                    <option value="Crime">Crime</option>
-                    <option value="Coming Of Age">Coming of Age</option>
-                    <option value="Christian">Christian</option>
-                    <option value="Devotion">Devotion</option>
-                    <option value="Dystopian">Dystopian</option>
-                    <option value="Documentary">Documentary</option>
-                    <option value="Drama">Drama</option>
-                    <option value="Disaster">Disaster</option>
-                    <option value="Erotic">Erotic</option>
-                    <option value="Epic">Epic</option>
-                    <option value="Experimental">Experimental Film</option>
-                    <option value="Family">Family</option>
-                    <option value="Fantasy">Fantasy</option>
-                    <option value="Found Footage">Found Footage</option>
-                    <option value="Historical">Historical</option>
-                    <option value="Heist">Heist</option>
-                    <option value="Horror">Horror</option>
-                    <option value="Gothic">Gothic</option>
-                    <option value="Indie">Indie</option>
-                    <option value="Television">Made-for-Television</option>
-                    <option value="Musical">Musical</option>
-                    <option value="Mystery">Mystery</option>
-                    <option value="Masala">Masala</option>
-                    <option value="Neo-Noir">Neo-Noir</option>
-                    <option value="Popaganda">Popaganda</option>
-                    <option value="Period">Period</option>
-                    <option value="Psychological">Psychological</option>
-                    <option value="Prehistoric">Prehistoric</option>
-                    <option value="Legal">Legal</option>
-                    <option value="LGBTQ">LGBTQ</option>
-                    <option value="Vampire">Vampire</option>
-                    <option value="Superhero">Superhero</option>
-                    <option value="Supervillain">Supervillain</option>
-                    <option value="South-Seas">South Seas</option>
-                    <option value="Monster">Monster</option>
-                    <option value="Martial arts">Martial Arts</option>
-                    <option value="religious">Religious</option>
-                    <option value="Romance">Romance</option>
-                    <option value="Road Flim">Road Flim</option>
-                    <option value="Zombie">Zombie</option>
-                    <option value="Sex">Sex</option>
-                    <option value="Spy">Spy</option>
-                    <option value="Science Fiction">Science Fiction</option>
-                    <option value="Supernatural">Supernatural</option>
-                    <option value="Sport">Sport</option>
-                    <option value="Sword and Sorcery">Sword and Sorcery</option>
-                    <option value="Survival">Survival</option>
-                    <option value="Surrealist">Surrealist</option>
-                    <option value="Slasher">Slasher Flim</option>
-                    <option value="Thriller">Thriller</option>
-                    <option value="Teen">Teen</option>
-                    <option value="War">War</option>
-                    <option value="Western">Western</option>
-                    <option value="Wuxia">Wuxia</option>
-                    <option value="Anti-Western">Anti-Western</option>
-                </select>
+  // Saves the current filter combination under a reusable local name.
+  const savePreset=() => { const name=window.prompt('Name this filter preset'); if (!name?.trim()) return; const next={ ...presets,[name.trim()]:filters }; setPresets(next); localStorage.setItem('cinevault-filter-presets',JSON.stringify(next)); };
 
-                {/* Language */}
-                <label className="block mb font-medium text-gray-700">Language</label>
-                <select multiple value={filters.language} onChange={(e) => handleMultiChange(e, 'language')} className="border p-2 rounded">
-                    <option value="Bengali">Bengali</option>
-                    <option value="Hindi">Hindi</option>
-                    <option value="English">English</option>
-                    <option value="French">French</option>
-                    <option value="Italian">Italian</option>
-                    <option value="Mandarin">Mandarin(Chinese)</option>
-                    <option value="Thai">Thai</option>
-                    <option value="Tagalog">Tagalog</option>
-                    <option value="Korean">Korean</option>
-                </select>
+  // Loads or removes a saved filter preset selected by name.
+  const choosePreset=(value) => { if (value) onChange({ ...filters,...presets[value] }); };
 
-                {/* Tags */}
-                <label className="block mb font-medium text-gray-700">Keywords</label>
-                <select multiple value={filters.tags} onChange={(e) => handleMultiChange(e, 'tags')} className="border p-2 rounded">
-                    <option value="Based on True Story">Based on True Story</option>
-                    <option value="Cult Classic">Cult Classic</option>
-                    <option value="Underrated">Underrated</option>
-                    <option value="Overrated">Overrated</option>
-                    <option value="Classic">Classic</option>
-                    <option value="Blockbuster">Blockbuster</option>
-                    <option value="Slow Burn">Slow Burn</option>
-                    <option value="Feel Good">Feel Good</option>
-                    <option value="Mind Bending">Mind Bending</option>
-                    <option value="Psychological">Psychological</option>
-                    <option value="Plot Twist">Plot Twist</option>
-                    <option value="Non-linear">Non-linear</option>
-                    <option value="Violent">Violent</option>
-                    <option value="Dark Humor">Dark Humor</option>
-                    <option value="Satirical">Satirical</option>
-                    <option value="Award Winning">Award Winning</option>
-                    <option value="Oscar Nominated">Oscar Nominated</option>
-                    <option value="Festival Favorite">Festival Favorite</option>
-                    <option value="Critically Acclaimed">Critically Acclaimed</option>
-                    <option value="Hidden Gem">Hidden Gem</option>
-                    <option value="Flop">Flop</option>
-                    <option value="Indie">Indie</option>
-                    <option value="Family Friendly">Family Friendly</option>
-                    <option value="Adult Only">Adult Only</option>
-                    <option value="Foreign Language">Foreign Language</option>
-                    <option value="Binge Worthy">Binge Worthy</option>
-                    <option value="Twist Ending">Twist Ending</option>
-                    <option value="Character Driven">Character Driven</option>
-                    <option value="Visually Stunning">Visually Stunning</option>
-                    <option value="Underground">Underground</option>
-                </select>
-
-                {/* Rating */}
-                <label className="block mb font-medium text-gray-700">Rating</label>
-                <select value={filters.rating} onChange={(e) => handleSingleChange(e, 'rating')} className="border p-2 rounded">
-                    <option value="">Any Rating</option>
-                    <option value="Rewatchable">Rewatchable</option>
-                    <option value="Must Watch Again">Must Watch Again</option>
-                    <option value="Content Less">Content Less</option>
-                </select>
-
-                {/* Award */}
-                <label className="block mb font-medium text-gray-700">Award</label>
-                <select value={filters.award} onChange={(e) => handleSingleChange(e, 'award')} className="border p-2 rounded">
-                    <option value="">Any Award</option>
-                    <option value="Academy Award">Academy Award</option>
-                    <option value="Golden Globe Award">Golden Globe Award</option>
-                    <option value="BAFTA Award">BAFTA Award</option>
-                    <option value="Cannes Film Festival">Cannes Film Festival</option>
-                    <option value="Critics' Choice Award">Critics' Choice Award</option>
-                    <option value="Saturn Award">Saturn Award</option>
-                    <option value="Satellite Award">Satellite Award</option>
-                    <option value="MTV Award">MTV Movie & TV Award</option>
-                    <option value="Golden Reel Award">Golden Reel Award</option>
-                    <option value="Teen Choice Award">Teen Choice Award</option>
-                    <option value="Nickelodeon Kids' Choice Award">Nickelodeon Kids' Choice Award</option>
-                    <option value="Golden Trailer Award">Golden Trailer Award</option>
-                    <option value="National Film Award">National Film Award</option>
-                    <option value="Golden Raspberry Award">Golden Raspberry Award</option>
-                    <option value="Annie Award">Annie Award</option>
-                    <option value="Scream Award">Scream Award</option>
-                    <option value="Filmfare Award">Filmfare Award</option>
-                    <option value="Sundance Film Festival">Sundance Film Festival</option>
-                    <option value="Venice Film Festival">Venice Film Festival</option>
-                    <option value="Berlin International Film Festival">Berlin International Film Festival</option>
-
-                </select>
-
-                {/* Release Year */}
-                <label className="block mb font-medium text-gray-700">Release Year</label>
-                <input
-                    type="number"
-                    placeholder="Year"
-                    value={filters.releaseYear}
-                    onChange={(e) => handleSingleChange(e, 'releaseYear')}
-                    className="border p-2 rounded"
-                />
-            </div>
-            <button
-                onClick={() => onChange({
-                    status: '',
-                    tags: [],
-                    language: [],
-                    genre: [],
-                    rating: '',
-                    award: '',
-                    releaseYear: '',
-                })}
-                className="mt-2 text-sm text-red-600 underline hover:text-red-800"
-            >
-                Clear All Filters
-            </button>
-
+  return (
+    <div className="filter-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside className="filter-drawer" ref={drawerRef} tabIndex="-1" role="dialog" aria-modal="true" aria-label="Library filters">
+        <div className="panel-heading"><div><span className="eyebrow">REFINE LIBRARY</span><h2>Filters</h2></div><button onClick={onClose} aria-label="Close filters"><FaTimes /></button></div>
+        <div className="filter-scroll">
+          <div className="preset-controls"><span className="filter-label">Saved presets</span><select aria-label="Saved filter presets" defaultValue="" onChange={(event) => choosePreset(event.target.value)}><option value="">Choose a saved filter</option>{Object.keys(presets).map((name) => <option key={name}>{name}</option>)}</select></div>
+          <label className="filter-label">Content type<select disabled={Boolean(lockedType)} value={effectiveType} onChange={(event) => onChange({ ...filters,type:event.target.value,subtype:'' })}><option value="">Movies and series</option><option value="movie">Movies</option><option value="series">Series</option></select>{lockedType && <small>This view is fixed to {lockedType === 'movie' ? 'movies' : 'series'}.</small>}</label>
+          <label className="filter-label">Subtype<select value={filters.subtype} onChange={(event) => update('subtype',event.target.value)}><option value="">{effectiveType ? `All ${effectiveType} subtypes` : 'All movie and series subtypes'}</option>{effectiveType === 'movie' && movieSubtypes.map((subtype) => <option key={subtype}>{subtype}</option>)}{effectiveType === 'series' && seriesSubtypes.map((subtype) => <option key={subtype}>{subtype}</option>)}{!effectiveType && <><optgroup label="Movie subtypes">{movieSubtypes.map((subtype) => <option key={`movie-${subtype}`} value={subtype}>{subtype}</option>)}</optgroup><optgroup label="Series subtypes">{seriesSubtypes.map((subtype) => <option key={`series-${subtype}`} value={subtype}>{subtype}</option>)}</optgroup></>}</select></label>
+          <label className="filter-label" title="Filter by creative and production progress">Production status<select title={PRODUCTION_STATUSES.find(([value]) => value === filters.productionStatus)?.[1] || 'Show every production stage'} value={filters.productionStatus} onChange={(event) => update('productionStatus',event.target.value)}><option value="" title="Do not filter by production stage">All production statuses</option>{PRODUCTION_STATUSES.map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select></label>
+          <label className="filter-label" title="Filter by public release lifecycle">Release status<select title="Choose a public release lifecycle state" value={filters.releaseStatus} onChange={(event) => update('releaseStatus',event.target.value)}><option value="" title="Do not filter by release lifecycle">All release statuses</option>{(effectiveType === 'series' ? SERIES_RELEASE_STATUSES : effectiveType === 'movie' ? MOVIE_RELEASE_STATUSES : [...new Map([...MOVIE_RELEASE_STATUSES,...SERIES_RELEASE_STATUSES].map((item) => [item[0],item])).values()]).map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select></label>
+          <label className="filter-label" title="Viewing status is calculated from saved movie and episode watch dates">Viewing status<select title="Choose a calculated viewing state" disabled={Boolean(lockedViewingStatus)} value={lockedViewingStatus || filters.viewingStatus} onChange={(event) => update('viewingStatus',event.target.value)}><option value="" title="Do not filter by viewing progress">All viewing statuses</option>{(effectiveType === 'series' ? SERIES_VIEWING_STATUSES : effectiveType === 'movie' ? MOVIE_VIEWING_STATUSES : [...MOVIE_VIEWING_STATUSES,...SERIES_VIEWING_STATUSES]).map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select>{lockedViewingStatus && <small>This view contains watched movies only.</small>}</label>
+          <label className="filter-label">Release year<select value={filters.releaseYear} onChange={(event) => update('releaseYear',event.target.value)}><option value="">Any year</option>{releaseYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
+          <label className="filter-label">Personal rating<select value={filters.rating} onChange={(event) => update('rating', event.target.value)}><option value="">Any rating</option><option value="__unrated__">Not rated</option>{ratings.map((rating) => <option key={rating}>{rating}</option>)}</select></label>
+          <p className="filter-rule-note">Multiple selections use strict AND matching. A title must contain every selected value.</p>
+          <MultiSelect label="Presentation forms" help="Show titles containing every selected production or presentation form" options={effectiveType ? (catalogs.presentationForms?.[effectiveType] || []) : [...(catalogs.presentationForms?.movie || []),...(catalogs.presentationForms?.series || []).filter((group) => !(catalogs.presentationForms?.movie || []).some((movieGroup) => movieGroup.name === group.name))]} grouped value={filters.presentationForms} onChange={(value) => update('presentationForms',value)} />
+          <MultiSelect label="Genres and subgenres" options={catalogs.genres} grouped value={filters.genres} onChange={(value) => update('genres', value)} />
+          <MultiSelect label="Languages" help="Show titles containing every selected language" options={languageOptions} value={filters.languages} onChange={(value) => update('languages', value)} />
+          <MultiSelect label="Tags" options={optionList(tags)} value={filters.tags} onChange={(value) => update('tags', value)} />
+          <MultiSelect label="Awards" options={optionList(awards)} value={filters.awards} onChange={(value) => update('awards', value)} />
+          <MultiSelect label="Origin countries" help="Show titles associated with every selected production country" options={countryOptions} value={filters.countries} onChange={(value) => update('countries', value)} />
+          <RemoteCompanySelect value={filters.productionCompanies} onChange={(value) => update('productionCompanies',value)} />
+          <MultiSelect label="Watching sources" options={sourceOptions} value={filters.watchSources} onChange={(value) => update('watchSources',value)} />
+          <MultiSelect label="Find-title link domains" options={optionList(catalogs.linkDomains || [])} value={filters.linkDomains} onChange={(value) => update('linkDomains',value)} />
         </div>
-    );
+        <div className="filter-actions"><button className="filter-clear-action" onClick={clear}>Clear all</button><button className="filter-preset-action" type="button" onClick={savePreset} title="Save the current filters in this browser"><FaBookmark aria-hidden="true" />Save preset</button><button className="primary-action filter-results-action" onClick={onClose}>Show results</button></div>
+      </aside>
+    </div>
+  );
 };
 
 export default FilterPanel;

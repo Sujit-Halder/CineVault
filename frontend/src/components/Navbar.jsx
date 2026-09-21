@@ -1,66 +1,46 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { FaBell, FaBookmark, FaChartPie, FaFilm, FaHeart, FaSearch, FaTv } from 'react-icons/fa';
 import Logo from './Logo';
-import { FaSearch, FaHome, FaBookmark, FaHeart, FaSignOutAlt } from "react-icons/fa";
 import MenuItem from './MenuItem';
 
-const Navbar = ({ menu, onSearch }) => {
-    const [activeItem, setActiveItem] = useState('Home');
+const API = import.meta.env.VITE_API_URL;
 
-    const handleMenuClick = (menuName) => {
-        setActiveItem(menuName);
-        menu(menuName);
+// Renders primary library navigation, global search, and unread notification count.
+const Navbar = ({ menu, onSearch, selectedMenu, notificationSignal }) => {
+  const [activeNotifications, setActiveNotifications] = useState(0);
+
+  useEffect(() => {
+    // Loads the unread notification count for the navigation badge.
+    const loadActiveNotifications = async () => {
+      try {
+        const response = await axios.get(`${API}/api/v1/notifications`);
+        setActiveNotifications(response.data.notifications.length);
+      } catch { setActiveNotifications(0); }
     };
+    loadActiveNotifications();
+    const interval = window.setInterval(loadActiveNotifications, 60000);
+    return () => window.clearInterval(interval);
+  }, [notificationSignal]);
 
-    return (
-        <div className='sticky top-0 z-30 bg-green-950 text-white font-bold shadow-md px-4 py-3 rounded m-2'>
-            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-                {/* Logo */}
-                <Logo />
+  const links = [
+    ['Library', <FaFilm key="library" />], ['Movies', <FaFilm key="movies" />], ['Series', <FaTv key="series" />],
+    ['Favorites', <FaHeart key="favorites" />], ['Watch Later', <FaBookmark key="later" />],
+    ['Statistics', <FaChartPie key="statistics" />],
+  ];
 
-                {/* Nav Links */}
-                <div className='flex gap-4 flex-wrap justify-center'>
-                    <MenuItem
-                        icon={<FaHome />}
-                        text="Home"
-                        active={activeItem === 'Home'}
-                        onClick={() => handleMenuClick('Home')}
-                    />
-                    <MenuItem
-                        icon={<FaHeart />}
-                        text="Favorites"
-                        active={activeItem === 'Favorites'}
-                        onClick={() => handleMenuClick('Favorites')}
-                    />
-                    <MenuItem
-                        icon={<FaBookmark />}
-                        text="Watch Later"
-                        active={activeItem === 'Watch Later'}
-                        onClick={() => handleMenuClick('Watch Later')}
-                    />
-                </div>
-
-                {/* Search and Close */}
-                <div className='flex items-center gap-4 relative'>
-                    <div className="relative bg-white rounded-lg font-light">
-                        <FaSearch className="absolute top-1/2 left-3 transform -translate-y-1/2 text-red-400" />
-                        <input
-                            name="search"
-                            type="text"
-                            placeholder="Search your movie based on title cast director country production company..."
-                            className="pl-10 pr-4 py-2 rounded-lg border text-sm w-[500px] focus:w-[520px] transition-all duration-300 text-black"
-                            onChange={(e) => onSearch(e.target.value.trim().toLowerCase())}
-                        />
-                    </div>
-                    {/* <MenuItem
-                        icon={<FaSignOutAlt />}
-                        text="Close"
-                        active={activeItem === 'Close'}
-                        onClick={() => handleMenuClick('Close')}
-                    /> */}
-                </div>
-            </div>
-        </div>
-    );
+  return (
+    <nav className="main-nav">
+      <Logo />
+      <div className="nav-links">
+        {links.map(([text, icon]) => <MenuItem key={text} icon={icon} text={text} active={selectedMenu === text} onClick={() => menu(text)} />)}
+      </div>
+      <label className="search-box" title="Search titles, cast, movie directors, series credits, and production companies"><FaSearch /><input type="search" placeholder="Search title, cast, director, series credit, production company…" onChange={(event) => onSearch(event.target.value.trim())} /></label>
+      <button className={`notification-button ${selectedMenu === 'Notifications' ? 'active' : ''}`} onClick={() => menu(selectedMenu === 'Notifications' ? 'Library' : 'Notifications')} aria-label={selectedMenu === 'Notifications' ? 'Return to library' : `${activeNotifications} unresolved notifications`} title={selectedMenu === 'Notifications' ? 'Return to library' : 'Open unresolved notifications'}>
+        <FaBell />{activeNotifications > 0 && <span>{activeNotifications > 99 ? '99+' : activeNotifications}</span>}
+      </button>
+    </nav>
+  );
 };
 
 export default Navbar;

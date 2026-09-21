@@ -1,11 +1,11 @@
 import React from 'react';
 
+// Renders the compact application brand used in navigation.
 const Logo=()=>{
     return(
-        <div className='flex flex-row flex-wrap font-bold text-xl'>
-            <img src='logo.png' alt='logo image' className='rounded-full w-10 h-10' />
-            <p className='text-yellow-600 text-xs'>Movie</p>
-            <p className='text-red-500 '>Watched</p>
+        <div className='brand-lockup'>
+            <img src='/logo.png' alt='' />
+            <p><span>Cine</span>Vault</p>
         </div>
     );
 };

@@ -4,7 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "backup": "node scripts/backup.js",
+    "export": "node scripts/export.js",
+    "restore": "node scripts/restore.js",
+    "decrypt-backup": "node scripts/decrypt-backup.js",
+    "check-assets": "node asset-health.js",
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",

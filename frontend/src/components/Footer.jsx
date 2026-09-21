@@ -1,9 +1,10 @@
 import React from 'react';
 
+// Renders the application ownership message.
 const Footer = () => {
     return (
-        <div className="bg-white m-2 p-4 text-center rounded shadow-md">
-            <p className="text-gray-700">&copy; 2026 Movie Tracker App</p>
+        <div className="site-footer">
+            <p>&copy; 2026 CineVault · Your library stays yours.</p>
         </div>
     );
 };

@@ -1,15 +1,14 @@
 import React from 'react';
 
+// Renders one accessible primary navigation action.
 const MenuItem = ({ icon, text, active, onClick }) => (
-  <div
+  <button type="button"
     onClick={onClick}
-    className={`flex items-center px-4 py-2 rounded-lg cursor-pointer transition-colors duration-200 ${
-      active ? 'bg-white text-red-500' : 'hover:bg-red-300'
-    }`}
+    className={`menu-item ${active ? 'active' : ''}`}
   >
     <span className="mr-3 text-lg">{icon}</span>
     <span className="font-medium">{text}</span>
-  </div>
+  </button>
 );
 
 export default MenuItem;

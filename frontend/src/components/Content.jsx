@@ -1,356 +1,276 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { FaPlus, FaFilter } from 'react-icons/fa';
+import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
-import MovieForm from './MovieForm';
+import { FaDatabase, FaDownload, FaFilter, FaPlus,FaList,FaThLarge,FaTable } from 'react-icons/fa';
 import MovieCard from './MovieCard';
+import MovieForm from './MovieForm';
+import NotificationPanel from './NotificationPanel';
 import FilterPanel from './FilterPanel';
+import Statistics from './Statistics';
+import DataHealth from './DataHealth';
+import LibraryTable from './LibraryTable';
+import ActivityLog from './ActivityLog';
+import { AWARDS, PERSONAL_RATINGS, TAGS } from '../catalogOptions';
 
-const Content = ({ selectedMenu, searchTerm }) => {
+const API = import.meta.env.VITE_API_URL;
+
+// Manages server-backed library queries, editing, pagination, exports, and notifications.
+const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged, onTrashChanged }) => {
+  const [result, setResult] = useState({ items:[], total:0, page:1, pages:0 });
+  const [catalogs, setCatalogs] = useState({ countries:[], ratingSystems:[], genres:[],presentationForms:{ movie:[],series:[] },watchSources:[],subtypes:{ movie:[],series:[] },productionCompanies:[],linkDomains:[] });
+  const [notifications, setNotifications] = useState([]);
+  const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
-  const [movies, setMovies] = useState([]);
-  const [editingMovie, setEditingMovie] = useState(null);
-  const [filters, setFilters] = useState({
-    status: '',
-    tags: [],
-    language: [],
-    genre: [],
-    rating: '',
-    award: '',
-    releaseYear: '',
-  });
-  const [sortType, setSortType] = useState('modification');
-  const [orderType, setOrderType] = useState('descending');
-  const [showFilter, setShowFilter] = useState(false);
+  const [sort, setSort] = useState('modification');
+  const [order, setOrder] = useState('descending');
+  const [page, setPage] = useState(1);
+  const [pageInput, setPageInput] = useState('1');
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [showFilters, setShowFilters] = useState(false);
+  const [restoreConflict,setRestoreConflict] = useState(null);
+  const [viewMode,setViewMode]=useState(() => localStorage.getItem('cinevault-view') || 'cards');
+  const [focusId,setFocusId] = useState(null);
+  const [focusReturnMenu,setFocusReturnMenu]=useState('Library');
+  const [filters, setFilters] = useState({ type:'',subtype:'',productionStatus:'',releaseStatus:'',viewingStatus:'',genres:[],presentationForms:[],languages:[],tags:[],rating:'',awards:[],countries:[],releaseYear:'',productionCompanies:[],watchSources:[],linkDomains:[] });
+  const contentTopRef = useRef(null);
+  const previousPageRef = useRef(page);
+  const activeFilterCount = Object.values(filters).reduce((count, value) => count + (Array.isArray(value) ? (value.length ? 1 : 0) : (value ? 1 : 0)), 0);
 
-  const [currentPage, setCurrentPage] = useState(1);
-  const moviesPerPage = 20;
+  // Displays a temporary status message.
+  const notify = (text) => {
+    setMessage(text);
+    window.setTimeout(() => setMessage(''), 3500);
+  };
 
-  const panelRef = useRef();
-
-  // Close filter panel on outside click
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (panelRef.current && !panelRef.current.contains(event.target)) {
-        setShowFilter(false);
+  // Loads the paginated library using the current navigation and query state.
+  const loadContent = async () => {
+    if (selectedMenu === 'Notifications' || selectedMenu === 'Statistics' || selectedMenu === 'Data Health' || selectedMenu === 'Activity') return;
+    setLoading(true);
+    try {
+      if (selectedMenu === 'Library' && focusId) {
+        const response=await axios.get(`${API}/api/v1/content/${focusId}`);
+        setResult({ items:[response.data],total:1,page:1,pages:1 });
+        return;
       }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+      const params = { page, limit:20, search:searchTerm, sort, order };
+      if (selectedMenu === 'Movies') { params.type = 'movie'; params.viewingStatus = 'Watched'; }
+      if (selectedMenu === 'Series') params.type = 'series';
+      if (selectedMenu === 'Favorites') params.favorite = true;
+      if (selectedMenu === 'Watch Later') params.watchLater = true;
+      if (selectedMenu === 'Trash') params.trashed = true;
+      Object.entries(filters).forEach(([key, value]) => {
+        if (selectedMenu === 'Movies' && (key === 'viewingStatus' || key === 'type')) return;
+        if (selectedMenu === 'Series' && key === 'type') return;
+        if ((selectedMenu === 'Movies' || selectedMenu === 'Series') && key === 'subtype') {
+          const lockedType = selectedMenu === 'Movies' ? 'movie' : 'series';
+          if (!(catalogs.subtypes?.[lockedType] || []).includes(value)) return;
+        }
+        if (Array.isArray(value) && value.length) params[key] = value.join(',');
+        else if (!Array.isArray(value) && value) params[key] = value;
+      });
+      const response = await axios.get(`${API}/api/v1/content`, { params });
+      setResult(response.data);
+    } catch (error) { notify(error.response?.data?.message || 'The library could not be loaded'); }
+    finally { setLoading(false); }
+  };
 
-  // Fetch movies on mount
-  useEffect(() => {
-    handleGetMovies();
-  }, []);
-
-  // Reset page when filters/search/sort/menu changes
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [filters, searchTerm, sortType, orderType, selectedMenu]);
-
-  // Fetch movies
-  const handleGetMovies = async () => {
+  // Loads metadata catalogs and active asset notifications.
+  const loadSupportData = async () => {
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/movie`);
-      setMovies(response.data.movies);
-      alert(response.data.message);
+      const [catalogResponse, notificationResponse] = await Promise.all([
+        axios.get(`${API}/api/v1/catalogs`), axios.get(`${API}/api/v1/notifications`),
+      ]);
+      setCatalogs(catalogResponse.data);
+      setNotifications(notificationResponse.data.notifications);
+    } catch { notify('Selection catalogs could not be loaded'); }
+  };
+
+  // Catalogs are static for the lifetime of the page and load once on mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadSupportData(); }, []);
+  useEffect(() => {
+    if (selectedMenu === 'Notifications') loadSupportData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMenu]);
+  useEffect(() => { setPage(1); }, [selectedMenu, searchTerm, sort, order, filters]);
+  // Library results reload whenever their query inputs change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadContent(); }, [selectedMenu, searchTerm, sort, order, page, filters, focusId]);
+
+  useEffect(() => {
+    setPageInput(String(page));
+    if (previousPageRef.current !== page) {
+      contentTopRef.current?.scrollIntoView({ behavior:'smooth', block:'start' });
+      previousPageRef.current = page;
+    }
+  }, [page]);
+
+  // Persists a new or existing content item and refreshes the current page.
+  const saveItem = async (item) => {
+    try {
+      const response = item.id
+        ? await axios.put(`${API}/api/v1/content/${item.id}`, item)
+        : await axios.post(`${API}/api/v1/content`, item);
+      notify(response.data.message);
+      setShowForm(false); setEditing(null);
+      await Promise.all([loadContent(), loadSupportData()]);
+      onNotificationsChanged();
+    } catch (error) { notify(error.response?.data?.message || 'The entry could not be saved'); }
+  };
+
+  // Opens an existing item in the editor and records a stable deep link.
+  const editItem = async (itemOrId) => {
+    try {
+      const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
+      const response = await axios.get(`${API}/api/v1/content/${id}`);
+      setEditing(response.data); setShowForm(true);
+      window.history.replaceState({}, '', `?edit=${id}`);
+    } catch { notify('The selected entry could not be opened'); }
+  };
+
+  // Closes the editor and clears its deep link.
+  const closeEditor = () => {
+    setShowForm(false); setEditing(null);
+    window.history.replaceState({}, '', window.location.pathname);
+  };
+
+  // Moves an item to trash after explicit confirmation.
+  const deleteItem = async (item) => {
+    if (!window.confirm(`Move “${item.title}” to trash?`)) return;
+    try {
+      const response = await axios.delete(`${API}/api/v1/content/${item.id}`);
+      notify(response.data.message); onTrashChanged(); loadContent();
+    } catch (error) { notify(error.response?.data?.message || 'The entry could not be moved to trash'); }
+  };
+
+  // Toggles a favorite without replacing the current result collection.
+  const toggleFavorite = async (item) => {
+    try { await axios.patch(`${API}/api/v1/content/${item.id}/favorite`); loadContent(); }
+    catch { notify('Favorite status could not be updated'); }
+  };
+
+  // Restores a trashed entry to the active library.
+  const restoreItem = async (item) => {
+    try {
+      const response = await axios.post(`${API}/api/v1/trash/${item.id}/restore`);
+      notify(response.data.message);
+      onTrashChanged();
+      if (result.items.length === 1 && page > 1) setPage((value) => value - 1); else loadContent();
     } catch (error) {
-      alert(error.response?.data?.message || "Failed to fetch movie list. Please try again");
+      if (error.response?.data?.code === 'RESTORE_CONFLICT') {
+        setRestoreConflict({ item,conflict:error.response.data.conflict });
+        return;
+      }
+      notify(error.response?.data?.message || 'The entry could not be restored');
     }
   };
 
-  // Add movie
-  const handleAddMovie = async (movieData) => {
+  // Applies the selected resolution to a restore identity conflict.
+  const resolveRestoreConflict = async (resolution) => {
+    if (!restoreConflict) return;
+    if (resolution === 'replace' && !window.confirm(`Replace “${restoreConflict.conflict.title}”? The active entry will be moved to Trash.`)) return;
     try {
-      const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/movie`, movieData);
-      setMovies(response.data.movies);
-      alert(response.data.message);
-    } catch (error) {
-      alert(error.response?.data?.message || "Failed to add movie to the list. Please try again");
-    }
+      const response=await axios.post(`${API}/api/v1/trash/${restoreConflict.item.id}/restore`,{ resolution });
+      notify(response.data.message); setRestoreConflict(null); onTrashChanged(); loadContent();
+    } catch (error) { notify(error.response?.data?.message || 'The restore conflict could not be resolved'); }
   };
 
-  // Edit movie
-  const handleEditMovie = async (movieDataEdited) => {
-    const Movie = movies.find(movie => movie.id === movieDataEdited.id);
-
-    const { modification: _newMod, ...editedRest } = movieDataEdited;
-    const { modification: _oldMod, ...originalRest } = Movie || {};
-    const isEqual = JSON.stringify(editedRest) === JSON.stringify(originalRest);
-
-    if (isEqual) {
-      alert('Nothing to Update');
+  // Permanently deletes a trashed entry after exact-title confirmation.
+  const permanentlyDeleteItem = async (item) => {
+    const confirmation = window.prompt(`Permanent deletion cannot be undone from Trash. A recovery backup will be created first.\n\nType the exact title to delete:\n${item.title}`);
+    if (confirmation !== item.title) {
+      if (confirmation !== null) notify('The title did not match. Nothing was deleted.');
       return;
     }
-
     try {
-      const response = await axios.put(`${import.meta.env.VITE_API_URL}/api/movie`, movieDataEdited);
-      setMovies(response.data.movies);
-      alert(response.data.message);
-    } catch (error) {
-      alert(error.response?.data?.message || "Failed to edit movie in the list. Please try again");
-    }
+      const response = await axios.delete(`${API}/api/v1/trash/${item.id}/permanent`);
+      notify(`${response.data.message}. Recovery backup: ${response.data.backup}`);
+      onTrashChanged();
+      if (result.items.length === 1 && page > 1) setPage((value) => value - 1); else loadContent();
+    } catch (error) { notify(error.response?.data?.message || 'The entry could not be permanently deleted'); }
   };
 
-  // Delete movie
-  const handleDeleteMovie = async (movieId) => {
-    try {
-      const response = await axios.delete(`${import.meta.env.VITE_API_URL}/api/movie`, { data: { movieId } });
-      setMovies(response.data.movies);
-      alert(response.data.message);
-    } catch (error) {
-      alert(error.response?.data?.message || "Failed to delete movie from the list. Please try again");
-    }
+  // Opens the notified entry and marks its notification as read.
+  const openNotification = async (notification) => {
+    await axios.patch(`${API}/api/v1/notifications/${notification.id}/read`);
+    setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, read:true } : item));
+    onNotificationsChanged();
+    setFocusId(notification.contentId);
+    setFocusReturnMenu('Library');
+    onNavigate('Library');
   };
 
-  // Toggle favorite
-  const handleFavoriteMovie = async (movieId) => {
-    try {
-      const response = await axios.patch(`${import.meta.env.VITE_API_URL}/api/movie`, { movieId });
-      setMovies(response.data.movies);
-      alert(response.data.message);
-    } catch (error) {
-      alert(error.response?.data?.message || "Failed to update favorite status. Please try again");
-    }
+  // Downloads a portable JSON export from the API.
+  const exportData = () => { window.location.href = `${API}/api/v1/export/json`; };
+
+  // Requests a verified SQLite backup from the API.
+  const backupData = async () => {
+    try { const response = await axios.post(`${API}/api/v1/backup`); notify(`${response.data.message}: ${response.data.filename}`); }
+    catch { notify('The database backup could not be created'); }
   };
 
-  // Save movie (add or edit)
-  const handleSaveMovie = (movieData) => {
-    if (editingMovie) {
-      handleEditMovie(movieData);
-    } else {
-      handleAddMovie(movieData);
-    }
-    setShowForm(false);
-    setEditingMovie(null);
+  // Navigates directly to a validated page number.
+  const goToPage = (event) => {
+    event.preventDefault();
+    const requested = Number.parseInt(pageInput, 10);
+    const destination = Math.min(Math.max(Number.isFinite(requested) ? requested : 1, 1), Math.max(result.pages, 1));
+    setPageInput(String(destination));
+    setPage(destination);
+    if (destination === page) contentTopRef.current?.scrollIntoView({ behavior:'smooth', block:'start' });
   };
 
-  // Open edit form
-  const handleEditForm = (movie) => {
-    setEditingMovie(movie);
-    setShowForm(true);
+  // Persists the preferred spacious or compact library presentation.
+  const changeView=(mode) => { setViewMode(mode); localStorage.setItem('cinevault-view',mode); };
+
+  // Applies one lifecycle value to selected rows after an explicit bulk-change review.
+  const bulkUpdate=async (ids,field,value) => {
+    if (!window.confirm(`Apply ${value} as ${field === 'productionStatus' ? 'production' : 'release'} status to ${ids.length} selected title${ids.length === 1 ? '' : 's'}?`)) return false;
+    try { const response=await axios.patch(`${API}/api/v1/content/bulk/lifecycle`,{ ids,field,value }); notify(`${response.data.updated} titles updated`); await loadContent(); return true; }
+    catch(error) { notify(error.response?.data?.message || 'The selected titles could not be updated'); return false; }
   };
 
-  // Filtered movies
-  const filteredMovies = movies.filter((movie) => {
-    if (selectedMenu === "Favorites" && !movie.favorite) return false;
-    if (selectedMenu === "Watch Later" && movie.status === "Watched") return false;
+  // A shared edit link opens its content entry once on mount.
+  useEffect(() => {
+    const requestedId = new URLSearchParams(window.location.search).get('edit');
+    if (requestedId) editItem(requestedId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    if (filters.status && (!movie.status || !movie.status.includes(filters.status))) return false;
-    if (filters.genre.length > 0 && (!movie.genres || !filters.genre.some(g => movie.genres.includes(g)))) return false;
-    if (filters.language.length > 0 && (!movie.language || !filters.language.some(l => movie.language.includes(l)))) return false;
-    if (filters.tags.length > 0 && (!movie.tags || !filters.tags.some(t => movie.tags.includes(t)))) return false;
-    if (filters.rating && movie.rating !== filters.rating) return false;
-    if (filters.award && (!movie.awards || !movie.awards.includes(filters.award))) return false;
-    if (filters.releaseYear && (!movie.releaseDate?.trim() || new Date(movie.releaseDate).getFullYear() !== Number(filters.releaseYear))) return false;
-
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      const inTitle = movie.title?.toLowerCase().includes(term);
-      const inDirector = movie.director?.toLowerCase().includes(term);
-      const inCasts = movie.casts?.toLowerCase().includes(term);
-      const inProducers = Array.isArray(movie.productionCompany)
-        ? movie.productionCompany.some(producer => producer.toLowerCase().includes(term))
-        : false;
-      const inCountry = Array.isArray(movie.countryOfOrigin)
-        ? movie.countryOfOrigin.some(country => country.toLowerCase().includes(term))
-        : false;
-      if (!inTitle && !inDirector && !inCasts && !inProducers && !inCountry) return false;
-    }
-
-    return true;
-  });
-
-  // Sorted movies
-  const sortedMovies = [...filteredMovies].sort((a, b) => {
-    let valA = a[sortType];
-    let valB = b[sortType];
-
-    const dateFields = ['creation', 'watchDate', 'releaseDate', 'modification'];
-
-    if (dateFields.includes(sortType)) {
-      valA = Date.parse(valA);
-      valB = Date.parse(valB);
-
-      if (isNaN(valA)) valA = -Infinity;
-      if (isNaN(valB)) valB = -Infinity;
-    }
-
-    if (sortType === 'duration') {
-      valA = Number(valA);
-      valB = Number(valB);
-    }
-
-    if (sortType === 'title') {
-      valA = (valA || '').trim();
-      valB = (valB || '').trim();
-
-      const result = valA.localeCompare(valB, undefined, {
-        numeric: true,
-        sensitivity: 'base',
-        ignorePunctuation: false
-      });
-
-      return orderType === 'ascending' ? result : -result;
-    }
-
-    if (valA < valB) return orderType === 'ascending' ? -1 : 1;
-    if (valA > valB) return orderType === 'ascending' ? 1 : -1;
-    return 0;
-  });
-
-  // Pagination
-  const totalPages = Math.ceil(sortedMovies.length / moviesPerPage);
-  const paginatedMovies = sortedMovies.slice(
-    (currentPage - 1) * moviesPerPage,
-    currentPage * moviesPerPage
-  );
-
-  // Condensed pagination (1 … n style)
-  const renderPageNumbers = () => {
-    const pages = [];
-    const maxVisible = 3;
-
-    // Always show first
-    if (currentPage > 1) {
-      pages.push(renderPageButton(1));
-    }
-
-    if (currentPage > maxVisible + 2) pages.push(<span key="left-ellipsis">…</span>);
-
-    const start = Math.max(2, currentPage - maxVisible);
-    const end = Math.min(totalPages - 1, currentPage + maxVisible);
-    for (let i = start; i <= end; i++) pages.push(renderPageButton(i));
-
-    if (currentPage < totalPages - (maxVisible + 1)) pages.push(<span key="right-ellipsis">…</span>);
-
-    if (currentPage < totalPages) pages.push(renderPageButton(totalPages));
-
-    return pages;
-  };
-
-  const renderPageButton = (page) => (
-    <button
-      key={page}
-      onClick={() => setCurrentPage(page)}
-      className={`px-3 py-1 rounded ${currentPage === page ? "bg-blue-600 text-white" : "bg-gray-300 hover:bg-gray-400"
-        }`}
-    >
-      {page}
-    </button>
-  );
+  if (selectedMenu === 'Notifications') return <NotificationPanel notifications={notifications} onOpen={openNotification} onClose={() => onNavigate('Library')} />;
+  if (selectedMenu === 'Statistics') return <Statistics />;
+  if (selectedMenu === 'Data Health') return <DataHealth onOpen={(id) => { setFocusReturnMenu('Data Health'); setFocusId(id); onNavigate('Library'); }} />;
+  if (selectedMenu === 'Activity') return <div className="content-area"><ActivityLog onOpen={(id) => { setFocusReturnMenu('Activity'); setFocusId(id); onNavigate('Library'); }} onClose={() => onNavigate('Library')} /></div>;
 
   return (
-    <div className="p-4 m-2 bg-gray-200 rounded shadow-md flex flex-col gap-4 h-full overflow-auto relative">
-      {/* Top Controls */}
-      <div className="sticky top-0 z-10 bg-gray-200 pt-2 pb-2 flex justify-between items-center flex-wrap gap-2">
-        {/* Filters */}
-        <div className="flex flex-wrap gap-2 items-center">
-          <div className="relative">
-            <button
-              onClick={() => setShowFilter(prev => !prev)}
-              className="flex items-center gap-2 bg-gray-800 hover:bg-gray-900 text-white font-semibold py-2 px-4 rounded-full shadow"
-            >
-              <FaFilter />
-            </button>
-
-            {showFilter && (
-              <div
-                ref={panelRef}
-                className="fixed top-25 left-15 z-50 bg-white border rounded shadow-xl p-4 w-80"
-              >
-                <FilterPanel filters={filters} onChange={setFilters} />
-              </div>
-            )}
-          </div>
-
-          <select
-            value={sortType}
-            onChange={(e) => setSortType(e.target.value)}
-            className="p-2 border rounded bg-white shadow-inner"
-          >
-            <option value="title">Movie Title</option>
-            <option value="creation">Created Date</option>
-            <option value="releaseDate">Release Date</option>
-            <option value="duration">Duration</option>
-            <option value="watchDate">Watch Date</option>
-            <option value="modification">Last Modified Date</option>
+    <section className="content-area" ref={contentTopRef}>
+      {message && <div className="toast" role="status">{message}</div>}
+      <div className="library-toolbar">
+        <div><span className="eyebrow">{focusId ? 'FOCUSED ENTRY' : selectedMenu.toUpperCase()}</span><h2>{focusId ? 'Review this title' : `${result.total.toLocaleString()} titles`}</h2></div>
+        <div className="toolbar-actions">
+          {focusId && <button className="secondary-action" onClick={() => { const destination=focusReturnMenu; setFocusId(null); onNavigate(destination); }}>Return to {focusReturnMenu.toLowerCase()}</button>}
+          <button className={`secondary-action filter-trigger ${activeFilterCount ? 'has-filters' : ''}`} onClick={() => setShowFilters(true)}><FaFilter /> Filters{activeFilterCount > 0 && <span>{activeFilterCount}</span>}</button>
+          <button className="secondary-action" title="Cycle between cards, compact cards, and an audit table" onClick={() => changeView(viewMode === 'cards' ? 'compact' : viewMode === 'compact' ? 'table' : 'cards')} aria-label={`Use ${viewMode === 'cards' ? 'compact' : viewMode === 'compact' ? 'table' : 'card'} view`}>{viewMode === 'cards' ? <FaList /> : viewMode === 'compact' ? <FaTable /> : <FaThLarge />} {viewMode === 'cards' ? 'Compact' : viewMode === 'compact' ? 'Table' : 'Cards'}</button>
+          <select aria-label="Sort library" value={sort} onChange={(event) => setSort(event.target.value)}>
+            <option value="modification">Recently updated</option><option value="title">Title</option>
+            <option value="creation">Creation date</option><option value="watchDate">Watch date and time</option>
+            <option value="releaseDate">Release date</option><option value="duration">Runtime</option>
           </select>
-
-          <select
-            value={orderType}
-            onChange={(e) => setOrderType(e.target.value)}
-            className="p-2 border rounded bg-white shadow-inner"
-          >
-            <option value="ascending">Ascending</option>
-            <option value="descending">Descending</option>
+          <select aria-label="Sort direction" value={order} onChange={(event) => setOrder(event.target.value)}>
+            <option value="descending">Descending</option><option value="ascending">Ascending</option>
           </select>
-        </div>
-
-        {/* Add Button */}
-        <div className="ml-auto">
-          <button
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-full shadow"
-            onClick={() => setShowForm(true)}
-          >
-            <FaPlus />
-            Add
-          </button>
+          <button className="secondary-action" title="Download a portable JSON export containing library metadata and histories" onClick={exportData}><FaDownload /> Export</button>
+          <button className="secondary-action" title="Create and verify a complete SQLite recovery backup in the configured export location" onClick={backupData}><FaDatabase /> Backup</button>
+          {selectedMenu !== 'Trash' && <button className="primary-action" onClick={() => { setEditing(null); setShowForm(true); }}><FaPlus /> Add title</button>}
         </div>
       </div>
-
-      {/* Count info */}
-      <p className="text-sm text-gray-600 text-right italic">
-        Showing {sortedMovies.length} of {movies.length} movies
-      </p>
-
-      {/* Movie Cards */}
-      {paginatedMovies.length > 0 ? (
-        paginatedMovies.map((movie, i) => (
-          <MovieCard
-            key={movie.id}
-            movieData={movie}
-            onEdit={handleEditForm}
-            onDelete={handleDeleteMovie}
-            onToggleFavorite={handleFavoriteMovie}
-          />
-        ))
-      ) : (
-        <p className="text-gray-500 italic text-center">No movies yet.</p>
+      {loading ? <div className="empty-state">Loading your library…</div> : result.items.length === 0 ? <div className="empty-state">No titles match this view.</div> : (
+        viewMode === 'table' && selectedMenu !== 'Trash' ? <LibraryTable items={result.items} onEdit={editItem} onBulkUpdate={bulkUpdate} /> : <div className={`card-grid ${viewMode === 'compact' ? 'compact-grid' : ''}`}>{result.items.map((item) => <MovieCard key={item.id} movieData={item} catalogs={catalogs} trashed={selectedMenu === 'Trash'} onEdit={() => editItem(item)} onDelete={() => deleteItem(item)} onToggleFavorite={() => toggleFavorite(item)} onRestore={() => restoreItem(item)} onPermanentDelete={() => permanentlyDeleteItem(item)} />)}</div>
       )}
-
-      {/* Pagination Controls */}
-      {totalPages > 1 && (
-        <div className="flex justify-center items-center gap-2 mt-6 flex-wrap">
-          <button
-            disabled={currentPage === 1}
-            onClick={() => setCurrentPage(p => p - 1)}
-            className="px-3 py-1 bg-gray-300 rounded disabled:opacity-50"
-          >
-            Prev
-          </button>
-
-          {renderPageNumbers()}
-
-          <button
-            disabled={currentPage === totalPages}
-            onClick={() => setCurrentPage(p => p + 1)}
-            className="px-3 py-1 bg-gray-300 rounded disabled:opacity-50"
-          >
-            Next
-          </button>
-        </div>
-      )}
-
-      {/* Movie Form Modal */}
-      {showForm && (
-        <MovieForm
-          onClose={() => { setShowForm(false); setEditingMovie(null); }}
-          onSubmit={handleSaveMovie}
-          initialData={editingMovie}
-        />
-      )}
-    </div>
+      {result.pages > 1 && <div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {result.pages}</span><form className="page-jump" onSubmit={goToPage}><label htmlFor="page-number">Go to</label><input id="page-number" type="number" min="1" max={result.pages} value={pageInput} onChange={(event) => setPageInput(event.target.value)} /><button type="submit">Go</button></form><button disabled={page === result.pages} onClick={() => setPage((value) => value + 1)}>Next</button></div>}
+      {showForm && <MovieForm initialData={editing} catalogs={catalogs} onClose={closeEditor} onSubmit={saveItem} />}
+      {restoreConflict && <div className="modal-backdrop" role="presentation"><section className="conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="restore-conflict-title"><span className="eyebrow">RESTORE CONFLICT</span><h2 id="restore-conflict-title">An active entry already matches</h2><p><strong>{restoreConflict.conflict.title}</strong> has the same type and release date as the trashed entry.</p><dl><div><dt>Cancel</dt><dd>Keep both entries unchanged.</dd></div><div><dt>Replace</dt><dd>Restore this entry and move the currently active one to Trash.</dd></div><div><dt>Merge</dt><dd>Combine metadata, watch history, and content links into the active entry.</dd></div></dl><div className="modal-actions"><button type="button" onClick={() => setRestoreConflict(null)}>Cancel</button><button type="button" onClick={() => resolveRestoreConflict('replace')}>Replace</button><button type="button" className="primary-action" onClick={() => resolveRestoreConflict('merge')}>Merge</button></div></section></div>}
+      {showFilters && <FilterPanel filters={filters} catalogs={catalogs} awards={AWARDS} tags={TAGS} ratings={PERSONAL_RATINGS} lockedViewingStatus={selectedMenu === 'Movies' ? 'Watched' : ''} lockedType={selectedMenu === 'Movies' ? 'movie' : selectedMenu === 'Series' ? 'series' : ''} onChange={setFilters} onClose={() => setShowFilters(false)} />}
+    </section>
   );
 };
 

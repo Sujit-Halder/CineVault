@@ -1,2 +1,8 @@
+backend/.env
+frontend/.env
+backend/logs/
+backend/data/
+backend/movies.json
+backend/movies.json.backup
+frontend/dist/
 **/node_modules/
-/backend/logs/
