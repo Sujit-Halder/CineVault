@@ -36,6 +36,14 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   const previousPageRef = useRef(page);
   const activeFilterCount = Object.values(filters).reduce((count, value) => count + (Array.isArray(value) ? (value.length ? 1 : 0) : (value ? 1 : 0)), 0);
 
+  // Removes the one-use editor deep link while preserving unrelated query parameters and the current hash.
+  const clearEditQuery = () => {
+    const url=new URL(window.location.href);
+    if (!url.searchParams.has('edit')) return;
+    url.searchParams.delete('edit');
+    window.history.replaceState({},'',`${url.pathname}${url.search}${url.hash}`);
+  };
+
   // Displays a temporary status message.
   const notify = (text) => {
     setMessage(text);
@@ -113,25 +121,25 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
         : await axios.post(`${API}/api/v1/content`, item);
       notify(response.data.message);
       setShowForm(false); setEditing(null);
+      clearEditQuery();
       await Promise.all([loadContent(), loadSupportData()]);
       onNotificationsChanged();
     } catch (error) { notify(error.response?.data?.message || 'The entry could not be saved'); }
   };
 
-  // Opens an existing item in the editor and records a stable deep link.
+  // Opens an existing item in the editor without leaving a reload-persistent URL state.
   const editItem = async (itemOrId) => {
     try {
       const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
       const response = await axios.get(`${API}/api/v1/content/${id}`);
       setEditing(response.data); setShowForm(true);
-      window.history.replaceState({}, '', `?edit=${id}`);
     } catch { notify('The selected entry could not be opened'); }
   };
 
   // Closes the editor and clears its deep link.
   const closeEditor = () => {
     setShowForm(false); setEditing(null);
-    window.history.replaceState({}, '', window.location.pathname);
+    clearEditQuery();
   };
 
   // Moves an item to trash after explicit confirmation.
@@ -232,7 +240,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   // A shared edit link opens its content entry once on mount.
   useEffect(() => {
     const requestedId = new URLSearchParams(window.location.search).get('edit');
-    if (requestedId) editItem(requestedId);
+    if (requestedId) { clearEditQuery(); editItem(requestedId); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

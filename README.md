@@ -76,26 +76,58 @@ The editor progressively enables metadata based on lifecycle and viewing state. 
 
 ## 🖼️ Preview
 
-<!-- Replace the placeholder below with docs/screenshots/library.png after adding a screenshot. -->
-
 <div align="center">
 
-### Add your application screenshot here
+### Your private screening room
 
-`docs/screenshots/library.png`
+<img src="docs/screenshots/library.png" width="100%" alt="CineVault library in the dark theme with a detailed movie card" />
 
-```html
-<img src="docs/screenshots/library.png" width="100%" alt="CineVault library screen" />
-```
+<sub>The complete library combines lifecycle, viewing history, classifications, metadata, source links, posters, and trailers in one card-oriented view.</sub>
 
 </div>
 
-Additional screenshots can be placed in [`docs/screenshots`](docs/screenshots):
+### Browse the collection
 
-- `library.png` — main library
-- `series-editor.png` — seasons and episodes
-- `notifications.png` — media-health notifications
-- `mobile.png` — responsive layout
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/screenshots/movies.png" width="100%" alt="CineVault watched-movies view" /><br /><sub><b>Watched movies</b> — movie-only browsing with the same rich metadata cards.</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/favourite.png" width="100%" alt="CineVault favorites view" /><br /><sub><b>Favorites</b> — a focused collection of personally marked titles.</sub></td>
+</tr>
+<tr>
+<td width="50%" align="center"><img src="docs/screenshots/watch_later.png" width="100%" alt="CineVault Watch Later view" /><br /><sub><b>Watch Later</b> — unreached titles kept ready for future viewing.</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/light_theme.png" width="100%" alt="CineVault library using the light theme" /><br /><sub><b>Light theme</b> — the full interface with a warmer high-contrast palette.</sub></td>
+</tr>
+</table>
+
+### Understand the library
+
+<p align="center"><img src="docs/screenshots/statistics1.png" width="100%" alt="CineVault statistics overview and summary metrics" /></p>
+
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/screenshots/statistics2.png" width="100%" alt="CineVault library distribution charts" /><br /><sub><b>Library distributions</b> — type, lifecycle, viewing state, genre, presentation, and country analysis.</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/statistics3.png" width="100%" alt="CineVault activity and metadata statistics" /><br /><sub><b>Activity and metadata</b> — watch patterns, growth, runtime, ratings, sources, and linked domains.</sub></td>
+</tr>
+</table>
+
+### Maintain and audit data
+
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/screenshots/data_health.png" width="100%" alt="CineVault Data Health report" /><br /><sub><b>Data Health</b> — actionable completeness, consistency, and canonicalization checks.</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/activity_log.png" width="100%" alt="CineVault Activity audit log" /><br /><sub><b>Activity</b> — readable, filterable operational and library audit history.</sub></td>
+</tr>
+<tr>
+<td width="50%" align="center"><img src="docs/screenshots/notifications.png" width="100%" alt="CineVault media-health notifications" /><br /><sub><b>Notifications</b> — unresolved poster and trailer problems without interrupting browsing.</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/filters.png" width="100%" alt="CineVault advanced filter panel" /><br /><sub><b>Advanced filters</b> — strict multi-value filtering with reusable browser-local presets.</sub></td>
+</tr>
+</table>
+
+### Add and edit titles
+
+<p align="center"><img src="docs/screenshots/form.png" width="86%" alt="CineVault structured add-title editor" /></p>
+
+<p align="center"><sub>The lifecycle-aware editor keeps controlling fields first and explains metadata that is not yet applicable.</sub></p>
 
 ## 🏗️ System architecture
 
