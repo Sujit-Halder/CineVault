@@ -87,6 +87,19 @@ test('an already migrated database can complete a fresh backend startup',() => {
     assert.equal(result.status,0,result.stderr);
 });
 
+test('a clean installation creates runtime state without migration artifacts',() => {
+    const cleanDirectory=fs.mkdtempSync(path.join(os.tmpdir(),'cinevault-clean-install-'));
+    const result=spawnSync(process.execPath,['-e',"require('./database').database.close();"],{
+        cwd:path.join(__dirname,'..'),encoding:'utf8',env:{ ...process.env,MOVIE_TRACKER_DATA_DIR:cleanDirectory,MOVIE_TRACKER_SKIP_LEGACY_IMPORT:'1' },
+    });
+    assert.equal(result.status,0,result.stderr);
+    assert.deepEqual(fs.readdirSync(cleanDirectory),['movie-tracker.sqlite']);
+    const cleanDatabase=new DatabaseSync(path.join(cleanDirectory,'movie-tracker.sqlite'),{ readOnly:true });
+    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,35);
+    assert.equal(cleanDatabase.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
+    cleanDatabase.close();
+});
+
 test('silent is a movie presentation form only',() => {
     const catalogs=getCatalogs();
     assert.ok(catalogs.presentationForms.movie.some((group) => group.name === 'Silent'));

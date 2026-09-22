@@ -12,15 +12,19 @@ const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const EXPORT_DIR = path.join(DATA_DIR, 'exports');
 const DATABASE_FILE = path.join(DATA_DIR, 'movie-tracker.sqlite');
 const LEGACY_FILE = path.join(__dirname, 'movies.json');
+const databaseExistedAtStartup = fs.existsSync(DATABASE_FILE);
+const legacyImportEnabled = process.env.MOVIE_TRACKER_SKIP_LEGACY_IMPORT !== '1';
+const freshInstallation = !databaseExistedAtStartup && (!legacyImportEnabled || !fs.existsSync(LEGACY_FILE));
+let startupMigrationsComplete = false;
 const OFFICIAL_INDIAN_RATINGS = new Map([
     ['Phule','U'],['War 2','UA 16+'],['Maa','UA 16+'],['Kantara: Chapter 1','UA 16+'],
     ['Saiyaara','UA 16+'],['Lokah Chapter 1: Chandra','UA 16+'],['Jolly LLB 3','UA 16+'],
     ['Param Sundari','UA 13+'],['Maargan','UA 13+'],['Kannappa','UA 13+'],['Mirai','UA 16+'],['Thamma','UA 16+'],
 ]);
 
-// Creates the application data directories when they are not present.
+// Creates the minimum directory required to hold the runtime database.
 function ensureDirectories() {
-    [DATA_DIR, BACKUP_DIR, EXPORT_DIR].forEach((directory) => fs.mkdirSync(directory, { recursive: true }));
+    fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
 // Returns a filesystem-safe timestamp for generated artifacts.
@@ -76,6 +80,7 @@ function pruneBackups(directory,label,encrypted=false,protectedPath='') {
 // Copies the legacy JSON source into the backup directory before its first import.
 function archiveLegacySource() {
     if (!fs.existsSync(LEGACY_FILE)) return null;
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const destination = path.join(BACKUP_DIR, `movies.pre-sqlite.${fileTimestamp()}.json`);
     fs.copyFileSync(LEGACY_FILE, destination, fs.constants.COPYFILE_EXCL);
     return destination;
@@ -262,6 +267,7 @@ function migrateLegacyData(database) {
     report.completedAt = new Date().toISOString();
     report.databaseRecords = database.prepare('SELECT COUNT(*) AS count FROM content_items').get().count;
     report.integrity = database.prepare('PRAGMA integrity_check').get().integrity_check;
+    fs.mkdirSync(EXPORT_DIR, { recursive: true });
     const reportFile = path.join(EXPORT_DIR, `migration-report.${fileTimestamp()}.json`);
     fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
     report.reportFile = reportFile;
@@ -631,7 +637,7 @@ function removeLegacyContentColumns(database) {
         PRAGMA foreign_keys=ON;`);
     const now=new Date().toISOString();
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,now);
-    return { version,backup:path.basename(backup) };
+    return { version,backup:backup ? path.basename(backup) : null };
 }
 
 // Adds explicit series chronology while retaining the original release date for title identity.
@@ -1111,6 +1117,8 @@ function migrateRegularSeriesSubtype(database) {
 
 // Creates a verified SQLite snapshot in the rotating backup directory.
 function createBackup(database, label = 'automatic') {
+    if (freshInstallation && !startupMigrationsComplete && label.startsWith('pre-')) return null;
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
     database.exec('PRAGMA wal_checkpoint(FULL)');
     const destination = path.join(BACKUP_DIR, `${label}.${fileTimestamp()}.sqlite`);
     database.exec(`VACUUM INTO '${destination.replace(/'/g, "''")}'`);
@@ -1175,6 +1183,7 @@ const legacyStatusRemovalReport = removeLegacyStatusColumns(database);
 const productionStatusNormalizationReport = migrateUnknownProductionStatuses(database);
 const filmingProductionLabelReport = migrateFilmingProductionLabel(database);
 const regularSeriesSubtypeReport = migrateRegularSeriesSubtype(database);
+startupMigrationsComplete = true;
 countryMigrationReport.forEach((report) => logger.event('info','database.migration.completed','Country normalization migration completed',report));
 if (auditMigrationReport) logger.event('info','database.migration.completed','Audit schema migration completed',auditMigrationReport);
 if (ratingMigrationReport) logger.event('info','database.migration.completed','Content rating normalization migration completed',ratingMigrationReport);

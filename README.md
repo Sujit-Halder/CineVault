@@ -225,7 +225,30 @@ backend/data/movie-tracker.sqlite
 
 This file is excluded from Git because Git tracks application code—not changing live data.
 
-On the first run, CineVault:
+### Fresh installation behavior
+
+When a repository is cloned without personal data, the first backend start creates only the minimum runtime state:
+
+```text
+backend/data/
+└── movie-tracker.sqlite
+```
+
+The database contains the current empty schema and is ready for new entries. A clean installation does **not** create historical migration snapshots, migration reports, an empty `backups/` directory, or an empty `exports/` directory.
+
+Artifact directories are created only when they are needed:
+
+| Path | First created when |
+|---|---|
+| `backend/data/backups/` | A manual or website backup is requested, or a data-changing operation requires a recovery snapshot |
+| `backend/data/exports/` | JSON data is exported or a genuine legacy import writes its migration report |
+| `backend/data/server.lock` | The API server is running |
+
+If `MOVIE_TRACKER_DATA_DIR` is configured, the same behavior applies under that directory instead of `backend/data`.
+
+### Optional legacy JSON import
+
+Only when `backend/movies.json` exists and no SQLite database has already been initialized, CineVault:
 
 1. Creates the SQLite schema.
 2. Archives `backend/movies.json` with a timestamp.
@@ -374,7 +397,7 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-On first startup, legacy JSON is imported only when a database has not already been initialized. Keep the generated migration report and pre-SQLite archive until the imported library has been verified. Subsequent startups use the SQLite database directly.
+On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. Backup and export folders appear later only when their corresponding features are used. Legacy JSON is imported only when `backend/movies.json` exists and a database has not already been initialized; keep its generated migration report and pre-SQLite archive until the imported library has been verified. Subsequent startups use the SQLite database directly.
 
 ## ⚙️ Configuration reference
 
@@ -733,7 +756,9 @@ Movie-Tracker/
 │   ├── scripts/             # backup, export, and restore commands
 │   ├── test/                # backend regression tests
 │   ├── logs/                # ignored structured operational logs
-│   └── data/                # live database, backups, exports, lock, and recovery artifacts
+│   └── data/                # ignored runtime state; starts with the live SQLite database only
+│       ├── backups/         # created lazily by backup or protected data-changing operations
+│       └── exports/         # created lazily by JSON export or a genuine legacy import
 ├── frontend/
 │   ├── public/
 │   ├── test/                # state, component, accessibility, and contrast tests

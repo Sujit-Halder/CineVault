@@ -1128,6 +1128,7 @@ function applyImport(payload,decisions = {},context = {}) {
 // Creates a portable JSON export and returns its filesystem location.
 function exportJson(context = {}) {
     const payload = buildExportPayload();
+    fs.mkdirSync(EXPORT_DIR,{ recursive:true });
     const file = path.join(EXPORT_DIR, `cinevault.${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
     fs.writeFileSync(file, JSON.stringify(payload, null, 2));
     writeAudit('export', 'library', null, { format:'json',destination:'server',filename:path.basename(file),contentCount:payload.content.length }, context);
