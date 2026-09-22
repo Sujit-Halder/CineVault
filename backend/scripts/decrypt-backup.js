@@ -2,6 +2,7 @@ const fs=require('fs');
 const path=require('path');
 const crypto=require('crypto');
 const { DatabaseSync }=require('node:sqlite');
+require('dotenv').config({ path:path.join(__dirname,'..','.env') });
 
 // Decrypts and verifies an encrypted off-device backup into a new SQLite file.
 function decryptBackup() {
