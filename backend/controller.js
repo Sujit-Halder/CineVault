@@ -124,6 +124,22 @@ exports.exportData = (_req, res) => {
     } catch (error) { sendError(_req,res,error,'library.export',{ action:'export',entityType:'library' }); }
 };
 
+// Streams a view-scoped complete or clean JSON export without retaining a server-side copy.
+exports.exportView = (req,res) => {
+    try {
+        const format=req.body?.format === 'clean' ? 'clean' : 'complete';
+        const scope=String(req.body?.scope || 'Library').slice(0,80);
+        const ids=Array.isArray(req.body?.ids) ? req.body.ids.slice(0,10000) : [];
+        const payload=Model.buildExportPayload({ format,scope,ids,query:req.body?.query || {} });
+        const timestamp=new Date().toISOString().replace(/[:.]/g,'-');
+        const safeScope=scope.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'library';
+        res.setHeader('Content-Type','application/json; charset=utf-8');
+        res.setHeader('Content-Disposition',`attachment; filename="cinevault.${safeScope}.${format}.${timestamp}.json"`);
+        Model.recordAudit('export','library',null,{ format,scope,destination:'browser',contentCount:payload.content.length,selected:Boolean(ids.length) },auditContext(req));
+        res.send(JSON.stringify(payload,null,2));
+    } catch(error) { sendError(req,res,error,'library.export',{ action:'export',entityType:'library' }); }
+};
+
 // Generates a verified SQLite backup and returns its filename.
 exports.backupData = (_req, res) => {
     try {
@@ -175,7 +191,9 @@ exports.mergeCanonicalValues = (req,res) => {
 exports.previewImport=(req,res) => { try { res.json(Model.previewImport(req.body)); } catch(error) { sendError(req,res,error,'library.import_preview'); } };
 
 // Applies explicit per-title JSON import decisions after creating a recovery backup.
-exports.applyImport=(req,res) => { try { res.json(Model.applyImport(req.body.payload,req.body.decisions,auditContext(req))); } catch(error) { sendError(req,res,error,'library.import',{ action:'import',entityType:'library' }); } };
+exports.applyImport=(req,res) => { try { res.json(Model.applyImport(req.body.payload,req.body.decisions,auditContext(req),{
+    validOnly:req.body.mode === 'valid-only',strategy:req.body.strategy,subsetConfirmation:req.body.subsetConfirmation,
+})); } catch(error) { sendError(req,res,error,'library.import',{ action:'import',entityType:'library' }); } };
 
 // Applies a reviewed lifecycle value to selected active library entries.
 exports.bulkUpdateContent=(req,res) => { try { res.json(Model.bulkUpdateContent(req.body,auditContext(req))); } catch(error) { sendError(req,res,error,'content.bulk_update',{ action:'bulk-update',entityType:'content' }); } };

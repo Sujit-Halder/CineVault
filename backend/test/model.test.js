@@ -381,13 +381,88 @@ test('restore conflicts require an explicit replace or merge decision',() => {
 test('JSON imports preview conflicts and apply only reviewed decisions',() => {
     const exported=Model.buildExportPayload();
     exported.content.push(payload({ id:'portable-new',title:'Portable new title' }));
+    exported.content.push(payload({ id:'portable-history',title:'Portable historical chronology',releaseDate:'2025-01-02',watchHistory:[{ watchedAt:'2025-01-01T10:00:00.000Z' }] }));
     const preview=Model.previewImport(exported);
     assert.ok(preview.conflicts > 0);
-    assert.equal(preview.newItems,1);
-    const result=Model.applyImport(exported,{});
+    assert.equal(preview.newItems,2);
+    assert.equal(preview.invalidItems,1);
+    assert.match(preview.items.find((item) => item.importId === 'portable-history').issues[0],/before release date/);
+    const result=Model.applyImport(exported,{}, {},{ validOnly:true });
     assert.equal(result.added,1);
+    assert.equal(result.skippedInvalid,1);
     assert.equal(result.skipped,preview.conflicts);
     assert.equal(Model.getContent({ search:'Portable new title' }).total,1);
+    assert.equal(Model.getContent({ search:'Portable historical chronology' }).total,0);
+
+    const rejected={ schemaVersion:4,content:[
+        payload({ id:'atomic-valid',title:'Atomic import valid' }),
+        payload({ id:'atomic-invalid',title:'Atomic import invalid',releaseDate:'2025-01-02',watchHistory:[{ watchedAt:'2025-01-01T10:00:00.000Z' }] }),
+    ] };
+    assert.throws(() => Model.applyImport(rejected,{}),/before release date/);
+    assert.equal(Model.getContent({ search:'Atomic import valid' }).total,0);
+});
+
+test('view-scoped complete and clean exports retain details without changing entries',() => {
+    const source=Model.addContent(payload({ title:'Scoped export title',watchHistory:[{ watchedAt:'2025-01-03T10:00:00.000Z' }],contentLinks:[{ url:'https://example.com/watch' }] }));
+    const before=Model.getById(source.id).modification;
+    const complete=Model.buildExportPayload({ format:'complete',scope:'Selection',ids:[source.id] });
+    assert.equal(complete.exportType,'complete');
+    assert.equal(complete.isSubset,true);
+    assert.equal(complete.content.length,1);
+    assert.equal(complete.content[0].id,source.id);
+    assert.equal(complete.watchHistory.length,1);
+    assert.equal(complete.contentLinks.length,1);
+
+    const clean=Model.buildExportPayload({ format:'clean',scope:'Filtered movies',query:{ search:'Scoped export title',type:'movie',sort:'title',order:'ascending' } });
+    assert.equal(clean.exportType,'clean');
+    assert.equal(clean.content.length,1);
+    assert.equal(Object.hasOwn(clean.content[0],'id'),false);
+    assert.equal(Object.hasOwn(clean.content[0],'creation'),false);
+    assert.equal(Object.hasOwn(clean.content[0].watchHistory[0],'id'),false);
+    assert.equal(clean.content[0].contentLinks[0].url,'https://example.com/watch');
+    assert.equal(Model.getById(source.id).modification,before);
+
+    const transferable=structuredClone(clean);
+    transferable.content[0].title='Clean transfer rebuilt';
+    const preview=Model.previewImport(transferable);
+    assert.equal(preview.validItems,1);
+    const imported=Model.applyImport(transferable,{});
+    assert.equal(imported.added,1);
+    const rebuilt=Model.getContent({ search:'Clean transfer rebuilt',limit:1 }).items[0];
+    assert.notEqual(rebuilt.id,source.id);
+    assert.equal(rebuilt.watchHistory.length,1);
+    assert.equal(rebuilt.contentLinks.length,1);
+
+    const trashed=Model.addContent(payload({ title:'Exported safety recovery' }));
+    Model.deleteContent(trashed.id);
+    const trashExport=Model.buildExportPayload({ format:'complete',scope:'Trash',ids:[trashed.id] });
+    assert.equal(trashExport.content[0].deletedAt,null);
+    assert.equal(Object.hasOwn(Model.buildExportPayload({ format:'clean',scope:'Trash',ids:[trashed.id] }).content[0],'trashed'),false);
+});
+
+test('import strategies either add new identities or transactionally replace the library',() => {
+    const retained=Model.addContent(payload({ title:'Import strategy retained' }));
+    const additive={ schemaVersion:4,exportType:'clean',content:[
+        payload({ title:'Import strategy retained',id:undefined }),
+        payload({ title:'Import strategy added',id:undefined }),
+    ] };
+    const appended=Model.applyImport(additive,{}, {},{ validOnly:true,strategy:'add-new' });
+    assert.equal(appended.added,1); assert.equal(appended.skipped,1);
+    assert.equal(Model.getById(retained.id).title,'Import strategy retained');
+
+    const replacement={ schemaVersion:4,exportType:'clean',content:[payload({ title:'Replacement library title',id:undefined })] };
+    const replaced=Model.applyImport(replacement,{}, {},{ strategy:'replace-library' });
+    assert.equal(replaced.added,1);
+    assert.equal(Model.getContent({ all:true }).total,1);
+    assert.equal(Model.getContent({ search:'Replacement library title' }).total,1);
+    assert.equal(Model.getContent({ search:'Import strategy retained' }).total,0);
+
+    const partial={ ...replacement,scope:'Movies',isSubset:true,content:[payload({ title:'Confirmed subset replacement',id:undefined })] };
+    assert.throws(() => Model.applyImport(partial,{}, {},{ strategy:'replace-library' }),/REPLACE WITH SUBSET/);
+    assert.equal(Model.getContent({ search:'Replacement library title' }).total,1);
+    const confirmed=Model.applyImport(partial,{}, {},{ strategy:'replace-library',subsetConfirmation:'REPLACE WITH SUBSET' });
+    assert.equal(confirmed.added,1);
+    assert.equal(Model.getContent({ search:'Confirmed subset replacement' }).total,1);
 });
 
 test('verified backups can be restored into an isolated data directory',() => {

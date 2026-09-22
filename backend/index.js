@@ -15,6 +15,16 @@ const PORT = process.env.PORT;
 const runtimeDataDirectory = process.env.MOVIE_TRACKER_DATA_DIR ? path.resolve(process.env.MOVIE_TRACKER_DATA_DIR) : path.join(__dirname,'data');
 const serverLockFile = path.join(runtimeDataDirectory,'server.lock');
 const rateBuckets = new Map();
+const RATE_WINDOW_MS=60000;
+
+// Removes expired client counters so inactive network addresses do not remain in process memory.
+function pruneRateBuckets() {
+    const oldestAllowed=Date.now() - RATE_WINDOW_MS;
+    for (const [key,bucket] of rateBuckets) if (bucket.start < oldestAllowed) rateBuckets.delete(key);
+}
+
+const rateBucketCleanup=setInterval(pruneRateBuckets,5 * 60 * 1000);
+rateBucketCleanup.unref();
 
 app.disable('x-powered-by');
 app.set('trust proxy',process.env.TRUST_PROXY === '1' ? 1 : false);
@@ -33,7 +43,7 @@ app.use((_req,res,next) => {
 // Limits abusive request bursts without affecting ordinary interactive use.
 app.use((req,res,next) => {
     const now=Date.now(); const key=req.ip || 'local'; const bucket=rateBuckets.get(key) || { start:now,count:0 };
-    if (now - bucket.start > 60000) { bucket.start=now; bucket.count=0; }
+    if (now - bucket.start > RATE_WINDOW_MS) { bucket.start=now; bucket.count=0; }
     bucket.count += 1; rateBuckets.set(key,bucket);
     if (bucket.count > Number(process.env.RATE_LIMIT_PER_MINUTE || 300)) { Model.recordAudit('security.rate-limited','authentication',null,{ path:req.path,method:req.method },{ requestId:req.requestId,actor:'guest',outcome:'failure' }); return res.status(429).json({ message:'Too many requests; try again shortly' }); }
     return next();
@@ -47,6 +57,15 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(requestLogging);
+
+// Prevents private API responses from being stored by browsers or intermediary caches.
+app.use('/api',(_req,res,next) => {
+    res.setHeader('Cache-Control','no-store, private');
+    res.setHeader('Pragma','no-cache');
+    res.setHeader('Expires','0');
+    next();
+});
+
 app.get('/api/auth/status',security.status);
 app.post('/api/auth/login',security.login);
 app.post('/api/auth/logout',security.logout);
@@ -71,7 +90,7 @@ app.listen(PORT, () => {
 
 let shutdownRecorded=false;
 // Records one orderly stop event and removes the maintenance lock.
-function removeServerLock() { try { if (!shutdownRecorded) { shutdownRecorded=true; Model.recordAudit('system.stopped','system',null,{ reason:'Orderly shutdown' },{ actor:'system' }); } if (fs.existsSync(serverLockFile)) fs.unlinkSync(serverLockFile); } catch {} }
+function removeServerLock() { try { clearInterval(rateBucketCleanup); if (!shutdownRecorded) { shutdownRecorded=true; Model.recordAudit('system.stopped','system',null,{ reason:'Orderly shutdown' },{ actor:'system' }); } if (fs.existsSync(serverLockFile)) fs.unlinkSync(serverLockFile); } catch {} }
 process.once('exit',removeServerLock);
 process.once('SIGINT',() => { removeServerLock(); process.exit(0); });
 process.once('SIGTERM',() => { removeServerLock(); process.exit(0); });

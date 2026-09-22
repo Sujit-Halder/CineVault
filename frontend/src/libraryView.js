@@ -1,9 +1,10 @@
 export const VIEW_MODES=['cards','compact','table'];
 
-// Keeps table selections limited to rows still present on the current page.
-export function constrainSelection(selected,items) {
-  const visible=new Set(items.map((item) => item.id));
-  return selected.filter((id) => visible.has(id));
+// Adds or removes one result page without discarding selections made on other pages.
+export function updatePageSelection(selected,items,checked) {
+  const pageIds=new Set(items.map((item) => item.id));
+  if (!checked) return selected.filter((item) => !pageIds.has(item.id));
+  return [...new Map([...selected,...items.map((item) => ({ id:item.id,type:item.type,title:item.title }))].map((item) => [item.id,item])).values()];
 }
 
 // Preserves only recognized table columns and falls back to the essential set.

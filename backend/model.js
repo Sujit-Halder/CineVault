@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { database, EXPORT_DIR, createBackup: createDatabaseBackup } = require('./database');
+const EXPORT_SCHEMA_VERSION=5;
 const { normalizeCountryCodes, normalizeContentRatings, normalizeWatchSources, normalizeSubtype,normalizePresentationForms,getCatalogs,EPISODE_TYPES } = require('./catalogs');
 const { normalizeSingleLineText, normalizeCommaSeparatedText, normalizeMultilineText } = require('./text-normalization');
 const { fullCompanyName,companyKey } = require('./company-normalization');
@@ -296,13 +297,13 @@ function persistenceValues(item) {
 // Returns paginated content and the total result count.
 function getContent(query = {}) {
     const page = Math.max(1, Number(query.page) || 1);
-    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
-    const clauses = [query.trashed === 'true' ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL'];
+    const limit = query.all === true ? 1000000 : Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const clauses = [query.trashed === 'true' || query.trashed === true ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL'];
     const parameters = [];
     if (query.type && ['movie', 'series'].includes(query.type)) { clauses.push('type = ?'); parameters.push(query.type); }
     if (query.subtype) { clauses.push('subtype = ?'); parameters.push(query.subtype); }
-    if (query.favorite === 'true') clauses.push('favorite = 1');
-    if (query.watchLater === 'true') clauses.push(`NOT EXISTS (SELECT 1 FROM watch_history wh WHERE wh.content_id=content_items.id)
+    if (query.favorite === 'true' || query.favorite === true) clauses.push('favorite = 1');
+    if (query.watchLater === 'true' || query.watchLater === true) clauses.push(`NOT EXISTS (SELECT 1 FROM watch_history wh WHERE wh.content_id=content_items.id)
         AND NOT EXISTS (SELECT 1 FROM seasons s JOIN episodes e ON e.season_id=s.id JOIN episode_watch_history h ON h.episode_id=e.id WHERE s.series_id=content_items.id)`);
     if (query.productionStatus) { clauses.push('production_status = ?'); parameters.push(query.productionStatus); }
     if (query.releaseStatus) { clauses.push('release_status = ?'); parameters.push(query.releaseStatus); }
@@ -791,15 +792,57 @@ function markNotificationRead(id, context = {}) {
     if (notification && !notification.read_at) writeAudit('read', 'notification', id, { contentId:notification.content_id,assetType:notification.asset_type }, { ...context,after:{ readAt } });
 }
 
-// Builds a portable representation of the active library.
-function buildExportPayload() {
-    return { schemaVersion:5, exportedAt:new Date().toISOString(), content:getMovies(),
-        seasons:database.prepare('SELECT * FROM seasons ORDER BY series_id,season_number').all(),
-        episodes:database.prepare('SELECT * FROM episodes ORDER BY season_id,episode_number').all(),
-        watchHistory:database.prepare('SELECT * FROM watch_history ORDER BY watched_at').all(),
-        episodeWatchHistory:database.prepare('SELECT * FROM episode_watch_history ORDER BY watched_at').all(),
-        contentLinks:database.prepare('SELECT * FROM content_links ORDER BY domain,url').all(),
-        seriesCredits:database.prepare('SELECT * FROM series_credits ORDER BY series_id,display_order').all() };
+// Removes persistence identifiers and timestamps while retaining all transferable library fields.
+function cleanExportItem(item) {
+    const cleanHistory=(history=[]) => history.map((entry) => ({ watchedAt:entry.watchedAt }));
+    const cleanEpisodes=(episodes=[]) => episodes.map((episode) => ({
+        episodeNumber:episode.episodeNumber,title:episode.title,episodeType:episode.episodeType,director:episode.director,
+        airDate:episode.airDate,duration:episode.duration,progressSeconds:episode.progressSeconds,summary:episode.summary,
+        watchHistory:cleanHistory(episode.watchHistory),
+    }));
+    const cleanSeasons=(seasons=[]) => seasons.map((season) => ({
+        seasonNumber:season.seasonNumber,title:season.title,productionStatus:season.productionStatus,releaseStatus:season.releaseStatus,
+        releaseDate:season.releaseDate,posterUrl:season.posterUrl,synopsis:season.synopsis,completionStatus:season.completionStatus,
+        episodes:cleanEpisodes(season.episodes),
+    }));
+    return {
+        type:item.type,subtype:item.subtype,title:item.title,originalTitle:item.originalTitle,productionStatus:item.productionStatus,
+        releaseStatus:item.releaseStatus,releaseDate:item.releaseDate,seriesStartDate:item.seriesStartDate,seriesEndDate:item.seriesEndDate,
+        seriesContinuing:item.seriesContinuing,seriesNetwork:item.seriesNetwork,duration:item.duration,director:item.director,
+        seriesCredits:(item.seriesCredits || []).map((credit) => ({ name:credit.name,role:credit.role })),casts:item.casts,
+        rating:item.rating,productionCompanies:item.productionCompanies,posterUrl:item.posterUrl,trailerUrl:item.trailerUrl,
+        summary:item.summary,favorite:item.favorite,genres:item.genres,presentationForms:item.presentationForms,language:item.language,
+        awards:item.awards,tags:item.tags,countryOfOrigin:item.countryOfOrigin,contentRatings:item.contentRatings,
+        watchSources:item.watchSources,watchHistory:cleanHistory(item.watchHistory),contentLinks:(item.contentLinks || []).map((link) => ({ url:link.url })),
+        seasons:cleanSeasons(item.seasons),
+    };
+}
+
+// Builds a complete or clean portable representation for a selected or filtered view.
+function buildExportPayload(options={}) {
+    const requestedIds=[...new Set((Array.isArray(options.ids) ? options.ids : []).map(String).filter(Boolean))];
+    const query=options.query || {};
+    const narrowingKeys=Object.keys(query).filter((key) => !['sort','order','page','limit','all'].includes(key));
+    const hasNarrowingQuery=narrowingKeys.some((key) => Array.isArray(query[key]) ? query[key].length > 0 : !['',null,undefined,false].includes(query[key]));
+    const content=requestedIds.length
+        ? requestedIds.map((id) => getAnyById(id)).filter(Boolean)
+        : getContent({ ...query,all:true,page:1 }).items;
+    const metadata={ schemaVersion:EXPORT_SCHEMA_VERSION,exportType:options.format === 'clean' ? 'clean' : 'complete',
+        scope:normalizeSingleLineText(options.scope) || 'Library',isSubset:Boolean(requestedIds.length || hasNarrowingQuery),exportedAt:new Date().toISOString(),contentCount:content.length };
+    if (metadata.exportType === 'clean') return { ...metadata,content:content.map(cleanExportItem) };
+    const ids=content.map((item) => item.id);
+    if (!ids.length) return { ...metadata,content:[],seasons:[],episodes:[],watchHistory:[],episodeWatchHistory:[],contentLinks:[],seriesCredits:[] };
+    const placeholders=ids.map(() => '?').join(',');
+    const seasons=database.prepare(`SELECT * FROM seasons WHERE series_id IN (${placeholders}) ORDER BY series_id,season_number`).all(...ids);
+    const seasonIds=seasons.map((season) => season.id); const seasonPlaceholders=seasonIds.map(() => '?').join(',');
+    const episodes=seasonIds.length ? database.prepare(`SELECT * FROM episodes WHERE season_id IN (${seasonPlaceholders}) ORDER BY season_id,episode_number`).all(...seasonIds) : [];
+    const episodeIds=episodes.map((episode) => episode.id); const episodePlaceholders=episodeIds.map(() => '?').join(',');
+    const recoverableContent=content.map((item) => ({ ...item,deletedAt:null }));
+    return { ...metadata,content:recoverableContent,seasons,episodes,
+        watchHistory:database.prepare(`SELECT * FROM watch_history WHERE content_id IN (${placeholders}) ORDER BY watched_at`).all(...ids),
+        episodeWatchHistory:episodeIds.length ? database.prepare(`SELECT * FROM episode_watch_history WHERE episode_id IN (${episodePlaceholders}) ORDER BY watched_at`).all(...episodeIds) : [],
+        contentLinks:database.prepare(`SELECT * FROM content_links WHERE content_id IN (${placeholders}) ORDER BY domain,url`).all(...ids),
+        seriesCredits:database.prepare(`SELECT * FROM series_credits WHERE series_id IN (${placeholders}) ORDER BY series_id,display_order`).all(...ids) };
 }
 
 // Builds aggregate library statistics without sending the full collection to the browser.
@@ -964,6 +1007,12 @@ function getDataHealth() {
     const episodeIssues=database.prepare(`SELECT c.id,c.title,COUNT(*) issue_count FROM content_items c JOIN seasons s ON s.series_id=c.id JOIN episodes e ON e.season_id=s.id
         WHERE c.deleted_at IS NULL AND (e.runtime_minutes IS NULL OR e.air_date IS NULL OR trim(e.air_date)='') GROUP BY c.id,c.title ORDER BY c.title COLLATE NOCASE`).all();
     results.incompleteEpisodes={ label:'Series with episodes missing runtime or release date',count:episodeIssues.length,items:episodeIssues };
+    const chronologyIssues=database.prepare(`SELECT DISTINCT c.id,c.title FROM content_items c JOIN watch_history h ON h.content_id=c.id
+        WHERE c.deleted_at IS NULL AND c.release_date IS NOT NULL AND date(h.watched_at)<date(c.release_date)
+        UNION SELECT DISTINCT c.id,c.title FROM content_items c JOIN seasons s ON s.series_id=c.id JOIN episodes e ON e.season_id=s.id
+        JOIN episode_watch_history eh ON eh.episode_id=e.id WHERE c.deleted_at IS NULL
+        AND date(eh.watched_at)<date(COALESCE(NULLIF(e.air_date,''),NULLIF(s.release_date,''),c.release_date)) ORDER BY title COLLATE NOCASE`).all();
+    results.viewingBeforeRelease=resultList('Titles with viewing dates before release',chronologyIssues);
     const validCreditRoles=new Set(['Creator','Co-Creator','Developer','Showrunner','Executive Producer','Producer','Head Writer','Series Director','Original Work Creator','Other']);
     const creditIssues=database.prepare(`SELECT c.id,c.title,sc.person_name,sc.role FROM series_credits sc JOIN content_items c ON c.id=sc.series_id WHERE c.deleted_at IS NULL`).all()
         .filter((credit) => !validCreditRoles.has(credit.role));
@@ -1073,6 +1122,7 @@ function dismissProductionCompanySuggestion(key,context={}) {
 // Reconstructs nested series and history data from a portable export payload.
 function importItems(payload) {
     if (!payload || !Array.isArray(payload.content)) throw Object.assign(new Error('Select a valid CineVault JSON export'),{ status:400 });
+    if (payload.exportType === 'clean') return payload.content;
     return payload.content.map((item) => {
         if (item.type !== 'series') return item;
         const seasons=(payload.seasons || []).filter((season) => season.series_id === item.id).map((season) => ({
@@ -1088,27 +1138,79 @@ function importItems(payload) {
     });
 }
 
+// Reports import values that require correction before normal entry validation can accept them.
+function importValidationIssues(item,existing={}) {
+    const issues=[];
+    for (const [label,value] of [['Poster URL',item.posterUrl],['Trailer URL',item.trailerUrl]]) if (value) {
+        try { const url=new URL(value); if (!['http:','https:'].includes(url.protocol)) throw new Error(); }
+        catch { issues.push(`${label} must be a valid HTTP or HTTPS URL`); }
+    }
+    if (item.type === 'movie' && item.releaseDate) (item.watchHistory || []).forEach((entry) => {
+        const watchDate=localCalendarDate(entry.watchedAt);
+        if (watchDate && watchDate < item.releaseDate) issues.push(`Watch date ${watchDate} is before release date ${item.releaseDate}`);
+    });
+    if (item.type === 'series') (item.seasons || []).forEach((season) => (season.episodes || []).forEach((episode) => {
+        const releaseDate=episode.airDate || season.releaseDate || item.releaseDate;
+        (episode.watchHistory || []).forEach((entry) => {
+            const watchDate=localCalendarDate(entry.watchedAt);
+            if (releaseDate && watchDate && watchDate < releaseDate) issues.push(`${episode.title || `Episode ${episode.episodeNumber}`}: watch date ${watchDate} is before release date ${releaseDate}`);
+        });
+    }));
+    try { normalizePayload(item,existing); }
+    catch(error) { if (!issues.some((issue) => issue === error.message || issue.includes(error.message))) issues.push(error.message); }
+    return [...new Set(issues)];
+}
+
 // Compares an export with the active library without changing stored data.
 function previewImport(payload) {
     const items=importItems(payload);
+    const identities=new Map();
     const rows=items.map((item) => {
-        const match=database.prepare("SELECT id,title FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND deleted_at IS NULL")
-            .get(normalizeTitle(item.title),item.releaseDate || '',item.type === 'series' ? 'series' : 'movie');
-        return { importId:item.id,title:item.title || 'Untitled',type:item.type || 'movie',releaseDate:item.releaseDate || '',existingId:match?.id || null,conflict:Boolean(match) };
+        const type=item.type === 'series' ? 'series' : 'movie';
+        const identity=`${type}\u0000${normalizeTitle(item.title)}\u0000${item.releaseDate || ''}`;
+        const repeated=identities.has(identity); identities.set(identity,true);
+        const match=database.prepare("SELECT id,title,deleted_at FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=?")
+            .get(normalizeTitle(item.title),item.releaseDate || '',type);
+        const issues=importValidationIssues(item,match ? getById(match.id) : {});
+        if (repeated) issues.push('The import contains another title with the same content type, title, and release date');
+        return { importId:item.id,title:item.title || 'Untitled',type,releaseDate:item.releaseDate || '',existingId:match?.id || null,conflict:Boolean(match),valid:issues.length === 0,issues };
     });
-    return { schemaVersion:payload.schemaVersion || 1,total:rows.length,newItems:rows.filter((row) => !row.conflict).length,
-        conflicts:rows.filter((row) => row.conflict).length,items:rows };
+    const scope=payload.scope || 'Library';
+    const isSubset=payload.isSubset === true || (payload.isSubset == null && scope !== 'Library');
+    return { schemaVersion:payload.schemaVersion || 1,exportType:payload.exportType === 'clean' ? 'clean' : 'complete',scope,isSubset,total:rows.length,newItems:rows.filter((row) => !row.conflict).length,
+        conflicts:rows.filter((row) => row.conflict).length,validItems:rows.filter((row) => row.valid).length,
+        invalidItems:rows.filter((row) => !row.valid).length,items:rows };
 }
 
 // Applies reviewed import decisions after creating one verified recovery backup.
-function applyImport(payload,decisions = {},context = {}) {
-    const items=importItems(payload); const backup=createDatabaseBackup(database,'pre-json-import');
-    const result={ added:0,replaced:0,merged:0,skipped:0,backup:path.basename(backup) };
-    items.forEach((incoming) => {
-        const existingRow=database.prepare("SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND deleted_at IS NULL")
+function applyImport(payload,decisions = {},context = {},options = {}) {
+    const items=importItems(payload);
+    const strategy=options.strategy === 'replace-library' ? 'replace-library' : 'add-new';
+    const subsetExport=payload.isSubset === true || (payload.isSubset == null && (payload.scope || 'Library') !== 'Library');
+    if (strategy === 'replace-library' && subsetExport && options.subsetConfirmation !== 'REPLACE WITH SUBSET') {
+        throw Object.assign(new Error('Type REPLACE WITH SUBSET to authorize replacing the library with a partial export'),{ status:400 });
+    }
+    const reviewed=items.map((incoming) => {
+        const existingRow=database.prepare("SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=?")
             .get(normalizeTitle(incoming.title),incoming.releaseDate || '',incoming.type === 'series' ? 'series' : 'movie');
-        if (!existingRow) { addContent({ ...incoming,id:crypto.randomUUID() },context); result.added += 1; return; }
-        const decision=decisions[incoming.id] || 'skip';
+        return { incoming,existingRow,issues:importValidationIssues(incoming,strategy === 'add-new' && existingRow ? getById(existingRow.id) : {}) };
+    });
+    const invalid=reviewed.filter((item) => item.issues.length);
+    if (invalid.length && !options.validOnly) throw Object.assign(new Error(`${invalid[0].incoming.title || 'Untitled'}: ${invalid[0].issues[0]}`),{ status:400,details:{ invalid:invalid.length } });
+    const accepted=reviewed.filter((item) => !item.issues.length);
+    if (!accepted.length) throw Object.assign(new Error('No valid titles are available to import'),{ status:400 });
+    if (strategy === 'replace-library' && invalid.length) throw Object.assign(new Error('Correct every invalid title before replacing the library'),{ status:400,details:{ invalid:invalid.length } });
+    const backup=createDatabaseBackup(database,'pre-json-import');
+    const result={ strategy,added:0,replaced:0,merged:0,skipped:0,skippedInvalid:invalid.length,backup:path.basename(backup) };
+    runTransaction(() => {
+    if (strategy === 'replace-library') database.prepare('DELETE FROM content_items').run();
+    accepted.forEach(({ incoming,existingRow }) => {
+        if (strategy === 'replace-library' || !existingRow) {
+            const importedId=strategy === 'replace-library' && payload.exportType !== 'clean' && incoming.id ? incoming.id : crypto.randomUUID();
+            addContent({ ...incoming,id:importedId,deletedAt:null,trashed:false },context);
+            result.added += 1; return;
+        }
+        const decision=strategy === 'add-new' ? 'skip' : (decisions[incoming.id] || 'skip');
         if (decision === 'skip') { result.skipped += 1; return; }
         const existing=getById(existingRow.id);
         if (decision === 'replace') { updateContent({ ...incoming,id:existing.id },context); result.replaced += 1; return; }
@@ -1122,6 +1224,7 @@ function applyImport(payload,decisions = {},context = {}) {
         },context); result.merged += 1;
     });
     writeAudit('import','library',null,result,context);
+    });
     return result;
 }
 

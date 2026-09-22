@@ -28,8 +28,11 @@ const calendarDateValue = (value) => {
 const BufferedDateInput = ({ value,onCommit,...props }) => {
   const displayValue=calendarDateValue(value);
   const [draft,setDraft]=useState(displayValue);
-  useEffect(() => setDraft(displayValue),[displayValue]);
-  return <input {...props} type="date" value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={() => onCommit(draft)} />;
+  const editing=useRef(false);
+  useEffect(() => { if (!editing.current) setDraft(displayValue); },[displayValue]);
+  return <input {...props} type="date" value={draft} onFocus={() => { editing.current=true; }} onChange={(event) => setDraft(event.target.value)}
+    onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+    onBlur={(event) => { editing.current=false; const completed=event.currentTarget.value; setDraft(completed); onCommit(completed); }} />;
 };
 
 // Returns today's date in the browser's local calendar for date-input limits.
@@ -82,11 +85,6 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
 
   // Runs a destructive form edit only after the user confirms its exact scope.
   const confirmRemoval=(message,action) => { if (window.confirm(message)) action(); };
-
-  // Returns the calendar-date portion of a stored local or ISO timestamp.
-  const dateInputValue = (value) => {
-    return calendarDateValue(value);
-  };
 
   // Combines a selected calendar date with the current local time as an ISO timestamp.
   const watchTimestamp = (dateValue) => {
@@ -275,7 +273,7 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
             <label className="span-two">Summary<textarea rows="5" value={form.summary} onChange={(event) => update('summary', event.target.value)} /></label>
           </div>
 
-          {form.type === 'movie' && <fieldset className="series-editor" disabled={!form.releaseDate} title={form.releaseDate ? 'Add a date to mark this movie watched; remove every date to return it to Not Watched' : 'Add the release date before recording a viewing'}><legend>Watch timeline · viewing status is calculated</legend><button type="button" title="Add a viewing date; this changes viewing status to Watched" className="secondary-action" onClick={addWatch}><FaPlus /> Add watch date</button>{watchError && <p className="field-error" role="alert">{watchError}</p>}{form.watchHistory.map((entry,index) => <div className="history-row" key={entry.id || index}><input title="The date this movie was watched" aria-label="Watch date" type="date" min={form.releaseDate || undefined} max={today} value={dateInputValue(entry.watchedAt)} onChange={(event) => updateWatch(index,event.target.value)} /><button type="button" title="Delete only this movie watch record" onClick={() => removeWatch(index)} aria-label="Remove watch date"><FaTrash /></button></div>)}</fieldset>}
+          {form.type === 'movie' && <fieldset className="series-editor" disabled={!form.releaseDate} title={form.releaseDate ? 'Add a date to mark this movie watched; remove every date to return it to Not Watched' : 'Add the release date before recording a viewing'}><legend>Watch timeline · viewing status is calculated</legend><button type="button" title="Add a viewing date; this changes viewing status to Watched" className="secondary-action" onClick={addWatch}><FaPlus /> Add watch date</button>{watchError && <p className="field-error" role="alert">{watchError}</p>}{form.watchHistory.map((entry,index) => <div className="history-row" key={entry.id || index}><BufferedDateInput title="The date this movie was watched" aria-label="Watch date" min={form.releaseDate || undefined} max={today} value={entry.watchedAt} onCommit={(dateValue) => updateWatch(index,dateValue)} /><button type="button" title="Delete only this movie watch record" onClick={() => removeWatch(index)} aria-label="Remove watch date"><FaTrash /></button></div>)}</fieldset>}
 
           <fieldset className="series-editor source-editor" disabled={!watched} title={watched ? 'Record how and where this title was watched' : 'Available after the title is marked Watched'}><legend>Watching sources{!watched && ' · watched titles only'}</legend><button type="button" className="secondary-action" onClick={addSource}><FaPlus /> Add source</button>{sourceError && <p className="field-error" role="alert">{sourceError}</p>}{form.watchSources.map((source,index) => { const record=typeof source === 'string' ? { method:source,provider:'' } : source; const label=catalogs.watchSources.find((item) => item.id === record.method)?.label || 'selected method'; return <div className="source-input-row" key={`${index}-${record.method}`}><label>Method<select aria-label={`Watching method ${index + 1}`} value={record.method} onChange={(event) => { setSourceError(''); updateSource(index,{ method:event.target.value,provider:event.target.value ? record.provider : '' }); }}><option value="">Choose method</option>{catalogs.watchSources.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>{record.method && <label>Provider <small>optional</small><input aria-label={`Watching provider ${index + 1}`} value={record.provider || ''} onChange={(event) => { setSourceError(''); updateSource(index,{ provider:event.target.value }); }} placeholder={`Specific ${label.toLowerCase()} provider`} /></label>}<button type="button" onClick={() => removeSource(index)} aria-label={`Remove ${label} source`} title={`Remove ${label} source`}><FaTrash /></button></div>; })}</fieldset>
 

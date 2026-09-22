@@ -23,6 +23,7 @@ router.get('/v1/catalogs/production-companies',controller.searchProductionCompan
 router.get('/v1/notifications', controller.getNotifications);
 router.patch('/v1/notifications/:id/read', controller.readNotification);
 router.get('/v1/export/json', controller.exportData);
+router.post('/v1/export/json', controller.exportView);
 router.post('/v1/backup', controller.backupData);
 router.get('/v1/audit', controller.getAudit);
 router.get('/v1/statistics', controller.getStatistics);

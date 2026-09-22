@@ -70,7 +70,7 @@ CineVault organizes movies and episodic series in one searchable library. It sto
 
 Library results are fetched with server pagination rather than loading the full database into the browser. Search covers titles, original titles, directors or whole-series credits, cast or voice cast, production companies, and summaries through SQLite FTS5. Filters support content type, subtype, lifecycle, calculated viewing status, presentation form, genre/subgenre, language, country, rating, award, tag, year, production company, watch method/provider, and content-link domain. Selecting several filter values is strict `AND` matching. Filter presets, display mode, and table columns are stored in the current browser only.
 
-The library can be displayed as spacious cards, compact cards, or an audit-oriented table. The table supports column selection, keyboard row navigation, selection of up to 100 current-page entries, and reviewed bulk changes to production or release status. Every delete action requires confirmation; permanent deletion additionally requires the exact title and creates a verified recovery backup first.
+The library can be displayed as spacious cards, compact cards, or an audit-oriented table. The table supports column selection, keyboard row navigation, cross-page title selection, and reviewed bulk changes to production or release status. Table selections remain active while paging and can be exported together. Every delete action requires confirmation; permanent deletion additionally requires the exact title and creates a verified recovery backup first.
 
 The editor progressively enables metadata based on lifecycle and viewing state. Unavailable fields remain visible with explanatory messages. A watched movie requires a release date and at least one watch-timeline event. Series viewing is derived only from episode watch histories. “Where to find this movie/series” stores repeatable HTTP(S) URLs and displays normalized domains; watch sources store a viewing method separately from an optional provider.
 
@@ -311,7 +311,14 @@ The current live database is always `backend/data/movie-tracker.sqlite`. Files b
 
 ### Portable JSON export and import
 
-`npm run export` and the website Export button produce a portable JSON representation containing content, seasons, episodes, movie watch history, episode watch history, content links, production-company relationships, and credits. Data Health provides browser import preview: it identifies new entries and conflicts using type + title + release date, then requires an explicit skip, replace, or merge decision. Import application creates a verified backup first.
+The website Export button offers two formats:
+
+- **Complete recovery export** retains database IDs, relationship IDs, creation/update timestamps, and every movie, series, season, episode, watch record, source, link, company, rating, and credit detail.
+- **Clean transferable export** retains the same library information in nested movie/series objects while omitting database-specific IDs and internal timestamps. Importing it generates fresh IDs and can build an equivalent CineVault library.
+
+Exports are scoped to the immediate library view. Library, Movies, Series, Favorites, Watch Later, and Trash export only the titles belonging to that tab after the current search, filters, and sorting are applied—not merely the visible pagination page. In table view, selecting titles overrides the view scope; selections persist across pages and only those selected titles are exported. Both formats remain importable. An exported Trash entry is deliberately restored as an active title on import because a safety export should recover the title rather than reproduce its pending-deletion state. Export is unavailable when the current scope contains no titles.
+
+`npm run export` continues to create a complete whole-library export for command-line recovery workflows. Data Health validates every title before import, including chronology, calendar dates, lifecycle rules, URLs, runtimes, classifications, and nested series data. The preview separates valid and invalid titles, explains each rejected title, identifies conflicts using content type + normalized title + release date, and labels the file as a full-library or partial export. Import offers two reviewed strategies: **Keep existing and add new** leaves matching active or trashed entries unchanged and inserts only new valid identities; **Replace current library** requires every imported title to be valid, creates a verified backup, clears Library and Trash, and rebuilds the active library from the file. Replacing with a filtered, tab-scoped, focused, or selected-title export additionally requires the exact typed phrase `REPLACE WITH SUBSET`; the backend independently enforces the same requirement. Applying either strategy runs as one transaction, so any unexpected failure rolls back the complete attempt rather than leaving a partial library.
 
 ## 🔔 Poster and trailer health
 
@@ -640,7 +647,13 @@ sudo journalctl -u cinevault -f
 
 Point an `A` record such as `movies.sujithalder.in` to the Elastic IP. Configure Nginx to serve `/opt/cinevault/frontend/dist`, use `try_files $uri $uri/ /index.html`, and proxy `/api/` to `http://127.0.0.1:3001` with `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto` headers. Obtain a trusted TLS certificate and redirect HTTP to HTTPS before using the production login.
 
-Example `/etc/nginx/sites-available/cinevault` before certificate installation:
+The maintained repository configuration at `deploy/nginx/cinevault.conf` also enables gzip, gives Vite's hash-named assets a one-year immutable cache, and prevents `index.html` from becoming stale. Install it before certificate installation:
+
+```bash
+sudo cp /opt/cinevault/deploy/nginx/cinevault.conf /etc/nginx/sites-available/cinevault
+```
+
+Its effective configuration is:
 
 ```nginx
 server {
@@ -649,6 +662,25 @@ server {
 
     root /opt/cinevault/frontend/dist;
     index index.html;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_min_length 1024;
+    gzip_types application/javascript application/json application/manifest+json image/svg+xml text/css text/plain text/xml;
+
+    location /assets/ {
+        try_files $uri =404;
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        access_log off;
+    }
+
+    location = /index.html {
+        expires -1;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
 
     location / {
         try_files $uri $uri/ /index.html;
@@ -682,13 +714,49 @@ sudo certbot --nginx -d movies.sujithalder.in
 sudo certbot renew --dry-run
 ```
 
-### 6. Protect recoverability
+The backend independently sends `Cache-Control: no-store, private` for every `/api` response. Private library, authentication, activity, statistics, and export responses therefore remain uncached on both localhost and EC2. Static caching applies only to the generated frontend assets.
+
+### 6. Configure application-log rotation
+
+Install the maintained logrotate policy. It rotates daily or after 10 MB, retains 30 compressed generations, and uses `copytruncate` so Winston can continue writing without a backend restart:
+
+```bash
+sudo cp /opt/cinevault/deploy/logrotate/cinevault /etc/logrotate.d/cinevault
+sudo chown root:root /etc/logrotate.d/cinevault
+sudo chmod 644 /etc/logrotate.d/cinevault
+sudo logrotate --debug /etc/logrotate.d/cinevault
+```
+
+The supplied policy assumes that the systemd service runs as `ubuntu`. If `User=` names another account, replace both `ubuntu` values in `/etc/logrotate.d/cinevault` before testing it. To perform one reviewed rotation test:
+
+```bash
+sudo logrotate --force /etc/logrotate.d/cinevault
+ls -lh /opt/cinevault/backend/logs
+```
+
+### 7. Protect recoverability
 
 Use encrypted EBS snapshots or AWS Backup in addition to application backups. Copy encrypted `.cvbackup` files to a private off-instance destination such as S3 using an EC2 IAM role rather than static AWS keys. Test decryption and isolated restoration periodically. A backup stored only on the same EC2 volume does not protect against volume loss or account compromise.
 
-### 7. Production verification
+### 8. Production verification
 
 Verify HTTPS, login/logout, Library, a temporary create/edit/trash/restore cycle, Activity, Data Health, Statistics, export, media scan, and manual backup. Confirm that ports 3000/3001 are unreachable publicly, no `.env` or data path is served by Nginx, and the newest backup passes integrity checking.
+
+Verify caching and compression using real generated asset names from `frontend/dist/assets`:
+
+```bash
+curl -I https://movies.sujithalder.in/
+curl -I -H 'Accept-Encoding: gzip' https://movies.sujithalder.in/assets/ACTUAL_HASHED_FILE.js
+curl -I https://movies.sujithalder.in/api/auth/status
+```
+
+`index.html` should report `no-cache` or `no-store`, hash-named assets should report a one-year immutable cache, eligible text assets should report `Content-Encoding: gzip`, and `/api` should report `Cache-Control: no-store, private`.
+
+### Localhost compatibility and performance
+
+Local development continues to use the existing `npm start` and `npm run dev` commands. It does not require Nginx or logrotate. API responses receive the same private `no-store` policy, while Vite continues to manage development assets and hot reload normally.
+
+These settings improve repeat visits and deployments by avoiding repeated downloads of unchanged hash-named JavaScript and CSS, reducing transferred text size with gzip, and ensuring a new `index.html` discovers each new build immediately. They also bound two sources of gradual resource growth: inactive rate-limit IP records are removed from backend memory every five minutes, and JSON logs are rotated on EC2. They do not change SQLite query results or cache mutable library records, so create, edit, import, trash, and restore operations remain immediately visible.
 
 ### Security model and limitations
 

@@ -28,6 +28,9 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   const [loading, setLoading] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
   const [restoreConflict,setRestoreConflict] = useState(null);
+  const [selectedRows,setSelectedRows]=useState([]);
+  const [showExport,setShowExport]=useState(false);
+  const [exportFormat,setExportFormat]=useState('complete');
   const [viewMode,setViewMode]=useState(() => localStorage.getItem('cinevault-view') || 'cards');
   const [focusId,setFocusId] = useState(null);
   const [focusReturnMenu,setFocusReturnMenu]=useState('Library');
@@ -35,6 +38,29 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   const contentTopRef = useRef(null);
   const previousPageRef = useRef(page);
   const activeFilterCount = Object.values(filters).reduce((count, value) => count + (Array.isArray(value) ? (value.length ? 1 : 0) : (value ? 1 : 0)), 0);
+  const exportUnavailable=!focusId && selectedRows.length === 0 && result.total === 0;
+
+  // Builds the canonical query shared by pagination and view-scoped exports.
+  const buildViewQuery = (includePage=true) => {
+    const params={ search:searchTerm,sort,order };
+    if (includePage) { params.page=page; params.limit=20; }
+    if (selectedMenu === 'Movies') { params.type='movie'; params.viewingStatus='Watched'; }
+    if (selectedMenu === 'Series') params.type='series';
+    if (selectedMenu === 'Favorites') params.favorite=true;
+    if (selectedMenu === 'Watch Later') params.watchLater=true;
+    if (selectedMenu === 'Trash') params.trashed=true;
+    Object.entries(filters).forEach(([key,value]) => {
+      if (selectedMenu === 'Movies' && (key === 'viewingStatus' || key === 'type')) return;
+      if (selectedMenu === 'Series' && key === 'type') return;
+      if ((selectedMenu === 'Movies' || selectedMenu === 'Series') && key === 'subtype') {
+        const lockedType=selectedMenu === 'Movies' ? 'movie' : 'series';
+        if (!(catalogs.subtypes?.[lockedType] || []).includes(value)) return;
+      }
+      if (Array.isArray(value) && value.length) params[key]=value.join(',');
+      else if (!Array.isArray(value) && value) params[key]=value;
+    });
+    return params;
+  };
 
   // Removes the one-use editor deep link while preserving unrelated query parameters and the current hash.
   const clearEditQuery = () => {
@@ -60,22 +86,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
         setResult({ items:[response.data],total:1,page:1,pages:1 });
         return;
       }
-      const params = { page, limit:20, search:searchTerm, sort, order };
-      if (selectedMenu === 'Movies') { params.type = 'movie'; params.viewingStatus = 'Watched'; }
-      if (selectedMenu === 'Series') params.type = 'series';
-      if (selectedMenu === 'Favorites') params.favorite = true;
-      if (selectedMenu === 'Watch Later') params.watchLater = true;
-      if (selectedMenu === 'Trash') params.trashed = true;
-      Object.entries(filters).forEach(([key, value]) => {
-        if (selectedMenu === 'Movies' && (key === 'viewingStatus' || key === 'type')) return;
-        if (selectedMenu === 'Series' && key === 'type') return;
-        if ((selectedMenu === 'Movies' || selectedMenu === 'Series') && key === 'subtype') {
-          const lockedType = selectedMenu === 'Movies' ? 'movie' : 'series';
-          if (!(catalogs.subtypes?.[lockedType] || []).includes(value)) return;
-        }
-        if (Array.isArray(value) && value.length) params[key] = value.join(',');
-        else if (!Array.isArray(value) && value) params[key] = value;
-      });
+      const params=buildViewQuery();
       const response = await axios.get(`${API}/api/v1/content`, { params });
       setResult(response.data);
     } catch (error) { notify(error.response?.data?.message || 'The library could not be loaded'); }
@@ -101,6 +112,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMenu]);
   useEffect(() => { setPage(1); }, [selectedMenu, searchTerm, sort, order, filters]);
+  useEffect(() => { setSelectedRows([]); },[selectedMenu,searchTerm,sort,order,filters]);
   // Library results reload whenever their query inputs change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadContent(); }, [selectedMenu, searchTerm, sort, order, page, filters, focusId]);
@@ -208,8 +220,20 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
     onNavigate('Library');
   };
 
-  // Downloads a portable JSON export from the API.
-  const exportData = () => { window.location.href = `${API}/api/v1/export/json`; };
+  // Downloads the selected rows or complete filtered view in the chosen portable format.
+  const exportData = async () => {
+    const selected=focusId ? [focusId] : viewMode === 'table' ? selectedRows.map((item) => item.id) : [];
+    try {
+      const response=await axios.post(`${API}/api/v1/export/json`,{
+        format:exportFormat,scope:focusId ? 'Focused entry' : selected.length ? `${selectedMenu} selection` : selectedMenu,ids:selected,query:selected.length ? {} : buildViewQuery(false),
+      },{ responseType:'blob' });
+      const disposition=response.headers['content-disposition'] || '';
+      const filename=disposition.match(/filename="([^"]+)"/)?.[1] || `cinevault.${exportFormat}.json`;
+      const url=URL.createObjectURL(response.data); const link=document.createElement('a'); link.href=url; link.download=filename;
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+      setShowExport(false); notify(`${exportFormat === 'clean' ? 'Clean' : 'Complete'} export downloaded`);
+    } catch(error) { notify(error.response?.data?.message || 'The export could not be created'); }
+  };
 
   // Requests a verified SQLite backup from the API.
   const backupData = async () => {
@@ -266,17 +290,18 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
           <select aria-label="Sort direction" value={order} onChange={(event) => setOrder(event.target.value)}>
             <option value="descending">Descending</option><option value="ascending">Ascending</option>
           </select>
-          <button className="secondary-action" title="Download a portable JSON export containing library metadata and histories" onClick={exportData}><FaDownload /> Export</button>
+          <span title={exportUnavailable ? 'Nothing can be exported because this view contains no titles' : 'Export the selected rows or every title in this filtered and sorted view'}><button className="secondary-action" disabled={exportUnavailable} onClick={() => setShowExport(true)}><FaDownload /> Export{viewMode === 'table' && selectedRows.length ? ` (${selectedRows.length})` : ''}</button></span>
           <button className="secondary-action" title="Create and verify a complete SQLite recovery backup in the configured export location" onClick={backupData}><FaDatabase /> Backup</button>
           {selectedMenu !== 'Trash' && <button className="primary-action" onClick={() => { setEditing(null); setShowForm(true); }}><FaPlus /> Add title</button>}
         </div>
       </div>
       {loading ? <div className="empty-state">Loading your library…</div> : result.items.length === 0 ? <div className="empty-state">No titles match this view.</div> : (
-        viewMode === 'table' && selectedMenu !== 'Trash' ? <LibraryTable items={result.items} onEdit={editItem} onBulkUpdate={bulkUpdate} /> : <div className={`card-grid ${viewMode === 'compact' ? 'compact-grid' : ''}`}>{result.items.map((item) => <MovieCard key={item.id} movieData={item} catalogs={catalogs} trashed={selectedMenu === 'Trash'} onEdit={() => editItem(item)} onDelete={() => deleteItem(item)} onToggleFavorite={() => toggleFavorite(item)} onRestore={() => restoreItem(item)} onPermanentDelete={() => permanentlyDeleteItem(item)} />)}</div>
+        viewMode === 'table' ? <LibraryTable items={result.items} selected={selectedRows} onSelectionChange={setSelectedRows} onEdit={editItem} onBulkUpdate={bulkUpdate} allowEditing={selectedMenu !== 'Trash'} /> : <div className={`card-grid ${viewMode === 'compact' ? 'compact-grid' : ''}`}>{result.items.map((item) => <MovieCard key={item.id} movieData={item} catalogs={catalogs} trashed={selectedMenu === 'Trash'} onEdit={() => editItem(item)} onDelete={() => deleteItem(item)} onToggleFavorite={() => toggleFavorite(item)} onRestore={() => restoreItem(item)} onPermanentDelete={() => permanentlyDeleteItem(item)} />)}</div>
       )}
       {result.pages > 1 && <div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {result.pages}</span><form className="page-jump" onSubmit={goToPage}><label htmlFor="page-number">Go to</label><input id="page-number" type="number" min="1" max={result.pages} value={pageInput} onChange={(event) => setPageInput(event.target.value)} /><button type="submit">Go</button></form><button disabled={page === result.pages} onClick={() => setPage((value) => value + 1)}>Next</button></div>}
       {showForm && <MovieForm initialData={editing} catalogs={catalogs} onClose={closeEditor} onSubmit={saveItem} />}
       {restoreConflict && <div className="modal-backdrop" role="presentation"><section className="conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="restore-conflict-title"><span className="eyebrow">RESTORE CONFLICT</span><h2 id="restore-conflict-title">An active entry already matches</h2><p><strong>{restoreConflict.conflict.title}</strong> has the same type and release date as the trashed entry.</p><dl><div><dt>Cancel</dt><dd>Keep both entries unchanged.</dd></div><div><dt>Replace</dt><dd>Restore this entry and move the currently active one to Trash.</dd></div><div><dt>Merge</dt><dd>Combine metadata, watch history, and content links into the active entry.</dd></div></dl><div className="modal-actions"><button type="button" onClick={() => setRestoreConflict(null)}>Cancel</button><button type="button" onClick={() => resolveRestoreConflict('replace')}>Replace</button><button type="button" className="primary-action" onClick={() => resolveRestoreConflict('merge')}>Merge</button></div></section></div>}
+      {showExport && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setShowExport(false)}><section className="conflict-dialog export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title"><span className="eyebrow">PORTABLE DATA</span><h2 id="export-title">Choose export format</h2><p>{focusId ? 'The currently focused title will be exported.' : viewMode === 'table' && selectedRows.length ? `${selectedRows.length} selected title${selectedRows.length === 1 ? '' : 's'} across table pages will be exported.` : `All ${result.total.toLocaleString()} titles matching the current ${selectedMenu.toLowerCase()} view, search, filters, and sorting will be exported.`} Titles exported from Trash are restored to the active library when imported.</p><label className="export-choice"><input type="radio" name="export-format" value="complete" checked={exportFormat === 'complete'} onChange={() => setExportFormat('complete')} /><span><strong>Complete recovery export</strong><small>Retains internal IDs, timestamps, relationships, and every title detail for the closest possible reconstruction.</small></span></label><label className="export-choice"><input type="radio" name="export-format" value="clean" checked={exportFormat === 'clean'} onChange={() => setExportFormat('clean')} /><span><strong>Clean transferable export</strong><small>Retains every movie, series, season, episode, source, link, and watch record while omitting database IDs and internal timestamps.</small></span></label><div className="modal-actions"><button type="button" onClick={() => setShowExport(false)}>Cancel</button><button type="button" className="primary-action" disabled={exportUnavailable} onClick={exportData}><FaDownload /> Download export</button></div></section></div>}
       {showFilters && <FilterPanel filters={filters} catalogs={catalogs} awards={AWARDS} tags={TAGS} ratings={PERSONAL_RATINGS} lockedViewingStatus={selectedMenu === 'Movies' ? 'Watched' : ''} lockedType={selectedMenu === 'Movies' ? 'movie' : selectedMenu === 'Series' ? 'series' : ''} onChange={setFilters} onClose={() => setShowFilters(false)} />}
     </section>
   );

@@ -1,0 +1,11 @@
+/opt/cinevault/backend/logs/*.jsonl {
+    daily
+    rotate 30
+    size 10M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 ubuntu ubuntu
+}
