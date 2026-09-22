@@ -1183,7 +1183,9 @@ const legacyStatusRemovalReport = removeLegacyStatusColumns(database);
 const productionStatusNormalizationReport = migrateUnknownProductionStatuses(database);
 const filmingProductionLabelReport = migrateFilmingProductionLabel(database);
 const regularSeriesSubtypeReport = migrateRegularSeriesSubtype(database);
-startupMigrationsComplete = true;
+if (freshInstallation) {
+    database.prepare("DELETE FROM audit_log WHERE actor='migration'").run();
+} else {
 countryMigrationReport.forEach((report) => logger.event('info','database.migration.completed','Country normalization migration completed',report));
 if (auditMigrationReport) logger.event('info','database.migration.completed','Audit schema migration completed',auditMigrationReport);
 if (ratingMigrationReport) logger.event('info','database.migration.completed','Content rating normalization migration completed',ratingMigrationReport);
@@ -1216,5 +1218,7 @@ if (legacyStatusRemovalReport) logger.event('info','database.migration.completed
 if (productionStatusNormalizationReport) logger.event('info','database.migration.completed','Unknown production statuses normalized',productionStatusNormalizationReport);
 if (filmingProductionLabelReport) logger.event('info','database.migration.completed','Filming and production status label normalized',filmingProductionLabelReport);
 if (regularSeriesSubtypeReport) logger.event('info','database.migration.completed','Regular series subtype migration completed',regularSeriesSubtypeReport);
+}
+startupMigrationsComplete = true;
 
 module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport };

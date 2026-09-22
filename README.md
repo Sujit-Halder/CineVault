@@ -234,7 +234,7 @@ backend/data/
 └── movie-tracker.sqlite
 ```
 
-The database contains the current empty schema and is ready for new entries. A clean installation does **not** create historical migration snapshots, migration reports, an empty `backups/` directory, or an empty `exports/` directory.
+The database contains the current empty schema and is ready for new entries. A clean installation does **not** create historical migration snapshots, migration reports, migration-completion log or Activity records, an empty `backups/` directory, or an empty `exports/` directory. Migration events remain enabled when an existing database genuinely requires an upgrade.
 
 Artifact directories are created only when they are needed:
 
