@@ -543,6 +543,7 @@ Minimum private-data exclusions:
 ```gitignore
 backend/.env
 frontend/.env
+frontend/.env.production
 backend/logs/
 backend/data/
 frontend/dist/
