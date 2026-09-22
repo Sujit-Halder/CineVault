@@ -34,6 +34,7 @@
 - [Testing and release checks](#-testing-and-release-checks)
 - [API reference](#-api-reference)
 - [Private internet hosting on Amazon EC2](#-private-internet-hosting-on-amazon-ec2)
+- [Complete EC2 rebuild after instance loss](#8-complete-ec2-rebuild-after-instance-loss)
 - [Updating and rolling back](#-updating-and-rolling-back)
 - [Troubleshooting](#-troubleshooting)
 - [Project layout](#-project-layout)
@@ -614,7 +615,7 @@ printf '%s\n' 'VITE_API_URL=https://movies.sujithalder.in' > .env.production
 npm run build
 ```
 
-Find Node with `which node`, then create `/etc/systemd/system/cinevault.service`:
+Find Node with `which node`. The maintained service file assumes `/usr/bin/node`, the `ubuntu` account, `/opt/cinevault`, and `/etc/cinevault.env`; adjust its installed copy if those commands or paths differ:
 
 ```ini
 [Unit]
@@ -637,9 +638,10 @@ PrivateTmp=true
 WantedBy=multi-user.target
 ```
 
-Replace `/usr/bin/node` if `which node` reports a different absolute path, then enable the service:
+Install it, replace `/usr/bin/node` or `User=ubuntu` in the installed copy when necessary, and enable the service:
 
 ```bash
+sudo cp /opt/cinevault/deploy/systemd/cinevault.service /etc/systemd/system/cinevault.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now cinevault
 sudo systemctl status cinevault
@@ -818,7 +820,180 @@ npm run decrypt-backup -- "/tmp/cinevault-restore-test/SELECTED_FILE.sqlite.cvba
 
 Then open `recovered.sqlite` with SQLite and run `PRAGMA integrity_check;`. Remove the temporary recovery directory after the test. Do not run the application restore command merely to test cloud retrieval.
 
-### 8. Production verification
+### 8. Complete EC2 rebuild after instance loss
+
+The Git repository contains application code and deployment templates, but intentionally contains no database, passwords, OAuth token, TLS private key, runtime logs, or browser-local preferences. Before relying on disaster recovery, retain these independently of EC2:
+
+- Git repository access and an SSH/deploy credential.
+- Domain registrar/DNS access.
+- The Google account and Google Cloud OAuth project used by rclone.
+- `BACKUP_ENCRYPTION_PASSPHRASE` in a password manager; this is essential.
+- The desired `APP_PASSWORD` and other `/etc/cinevault.env` values.
+- At least one confirmed `.cvbackup` in Google Drive and a periodically tested recovery procedure.
+
+If the EC2 instance is deleted, rebuild in this order.
+
+#### A. Create and secure the replacement instance
+
+Create an Ubuntu LTS EC2 instance with encrypted EBS and IMDSv2, associate an Elastic IP, allow public `80`/`443`, restrict `22` to your IP, and leave `3000`/`3001` closed. Update the `movies.sujithalder.in` DNS `A` record if the public IP changed.
+
+Install prerequisites and a system-wide maintained Node LTS release that provides `node:sqlite`. The system-wide installation keeps the repository's `/usr/bin/node` and `/usr/bin/npm` systemd defaults reproducible:
+
+```bash
+sudo apt update
+sudo apt install -y curl git nginx sqlite3 rclone
+curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource_setup.sh
+sudo -E bash /tmp/nodesource_setup.sh
+sudo apt install -y nodejs
+rm -f /tmp/nodesource_setup.sh
+node --version
+npm --version
+which node
+which npm
+node -e "require('node:sqlite'); console.log('node:sqlite available')"
+```
+
+If the final command fails, install a newer maintained Node release before continuing.
+
+#### B. Restore the source tree and runtime directories
+
+```bash
+sudo mkdir -p /opt/cinevault /var/lib/cinevault/off-device-outbox
+sudo chown -R ubuntu:ubuntu /opt/cinevault /var/lib/cinevault
+sudo chmod 700 /var/lib/cinevault /var/lib/cinevault/off-device-outbox
+git clone YOUR_PRIVATE_REPOSITORY_URL /opt/cinevault
+cd /opt/cinevault/backend && npm ci
+cd /opt/cinevault/frontend && npm ci
+```
+
+If the repository uses a deploy key, install a newly authorized key rather than copying an unknown private key from an untrusted disk image.
+
+#### C. Recreate secrets and production configuration
+
+Create `/etc/cinevault.env` from the following template using values retained outside EC2:
+
+```dotenv
+NODE_ENV=production
+TRUST_PROXY=1
+PORT=3001
+WEBSITE=https://movies.sujithalder.in
+MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault
+MOVIE_TRACKER_SKIP_LEGACY_IMPORT=1
+APP_PASSWORD=replace-with-a-long-random-unique-password
+MOVIE_TRACKER_TIME_ZONE=Asia/Kolkata
+RATE_LIMIT_PER_MINUTE=300
+MANUAL_BACKUP_RETENTION=10
+AUTOMATIC_DAILY_RETENTION_DAYS=30
+AUTOMATIC_MONTHLY_RETENTION_MONTHS=12
+BACKUP_MIRROR_DIR=/var/lib/cinevault/off-device-outbox
+BACKUP_ENCRYPTION_PASSPHRASE=restore-the-original-off-device-passphrase
+```
+
+```bash
+sudo nano /etc/cinevault.env
+sudo chown root:root /etc/cinevault.env
+sudo chmod 600 /etc/cinevault.env
+```
+
+The original encryption passphrase must be used to decrypt existing Drive backups. Changing `APP_PASSWORD` is allowed and does not change database contents.
+
+#### D. Reconnect Google Drive and retrieve a backup
+
+Run `rclone config` as `ubuntu`, recreate the `gdrive` remote with the existing personal OAuth desktop client, select `drive.file`, and complete Google authorization. A lost rclone token can be recreated; the backup encryption passphrase cannot.
+
+```bash
+rclone config
+chmod 700 ~/.config/rclone
+chmod 600 ~/.config/rclone/rclone.conf
+rclone lsl gdrive:CineVault/Backups
+mkdir -p /tmp/cinevault-rebuild
+rclone copy gdrive:CineVault/Backups /tmp/cinevault-rebuild --include '*.cvbackup'
+ls -lh /tmp/cinevault-rebuild
+```
+
+Choose the newest expected backup after reviewing its timestamp and size. Decrypt it without putting the passphrase on the command line:
+
+```bash
+sudo bash -c 'set -a; . /etc/cinevault.env; set +a; cd /opt/cinevault/backend; node scripts/decrypt-backup.js "$1" "$2"' _ \
+  /tmp/cinevault-rebuild/SELECTED_FILE.sqlite.cvbackup \
+  /tmp/cinevault-rebuild/recovered.sqlite
+sqlite3 /tmp/cinevault-rebuild/recovered.sqlite 'PRAGMA integrity_check;'
+```
+
+Continue only when the result is `ok`. Because this is a new instance and the API has never started, install the verified database directly without any WAL or SHM file:
+
+```bash
+sudo install -o ubuntu -g ubuntu -m 600 \
+  /tmp/cinevault-rebuild/recovered.sqlite \
+  /var/lib/cinevault/movie-tracker.sqlite
+```
+
+Never copy a `-wal` or `-shm` file from another database image. If no cloud backup exists, restore a verified manual `.sqlite` backup over SCP instead. Without either a SQLite backup or portable JSON export, Git cannot reconstruct library data.
+
+#### E. Build and start CineVault
+
+```bash
+cd /opt/cinevault/frontend
+printf '%s\n' 'VITE_API_URL=https://movies.sujithalder.in' > .env.production
+npm run build
+
+sudo cp /opt/cinevault/deploy/systemd/cinevault.service /etc/systemd/system/cinevault.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now cinevault
+sudo systemctl status cinevault
+sudo journalctl -u cinevault -n 100 --no-pager
+```
+
+Check `which node`; update `ExecStart=` in the installed service if Node is not `/usr/bin/node`.
+
+#### F. Restore Nginx, TLS, logs, and cloud scheduling
+
+Install the repository's HTTP Nginx configuration, validate it, update DNS, and then let Certbot add HTTPS:
+
+```bash
+sudo cp /opt/cinevault/deploy/nginx/cinevault.conf /etc/nginx/sites-available/cinevault
+sudo ln -sfn /etc/nginx/sites-available/cinevault /etc/nginx/sites-enabled/cinevault
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d movies.sujithalder.in
+sudo certbot renew --dry-run
+```
+
+Install log rotation and the Drive timer:
+
+```bash
+sudo cp /opt/cinevault/deploy/logrotate/cinevault /etc/logrotate.d/cinevault
+sudo chown root:root /etc/logrotate.d/cinevault
+sudo chmod 644 /etc/logrotate.d/cinevault
+sudo cp /opt/cinevault/deploy/systemd/cinevault-google-drive-backup.service /etc/systemd/system/
+sudo cp /opt/cinevault/deploy/systemd/cinevault-google-drive-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cinevault-google-drive-backup.timer
+sudo logrotate --debug /etc/logrotate.d/cinevault
+sudo systemctl list-timers cinevault-google-drive-backup.timer
+```
+
+Run a new end-to-end encrypted backup only after the restored site has been checked:
+
+```bash
+sudo systemctl start cinevault-google-drive-backup.service
+sudo systemctl status cinevault-google-drive-backup.service
+rclone lsl gdrive:CineVault/Backups
+```
+
+#### G. Validate the recovered system
+
+Verify the expected title counts, a recent title, watch histories, series episodes, Trash, Activity, Data Health, Statistics, login/logout, export, and a temporary create/edit/trash/restore cycle. Confirm HTTPS, immutable asset caching, API `no-store`, gzip, timer status, disk space, and the new Drive backup before removing `/tmp/cinevault-rebuild`:
+
+```bash
+sudo rm -rf /tmp/cinevault-rebuild
+```
+
+Browser-local theme, font, saved-filter presets, display mode, and table-column choices are not part of the database and must be selected again. Historical JSONL application logs are also not restored unless they were backed up separately; structured Activity records inside SQLite are restored.
+
+### 9. Production verification
 
 Verify HTTPS, login/logout, Library, a temporary create/edit/trash/restore cycle, Activity, Data Health, Statistics, export, media scan, and manual backup. Confirm that ports 3000/3001 are unreachable publicly, no `.env` or data path is served by Nginx, and the newest backup passes integrity checking.
 
@@ -915,6 +1090,10 @@ Movie-Tracker/
 │       ├── App.jsx
 │       └── index.css
 ├── docs/screenshots/        # product screenshots
+├── deploy/
+│   ├── nginx/               # frontend cache, compression, and API proxy template
+│   ├── logrotate/           # application and Drive-upload log retention
+│   └── systemd/             # API service and encrypted Google Drive backup timer
 └── README.md
 ```
 
