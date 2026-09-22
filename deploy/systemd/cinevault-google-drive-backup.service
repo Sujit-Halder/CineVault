@@ -1,0 +1,15 @@
+[Unit]
+Description=Create and upload an encrypted CineVault backup to Google Drive
+After=network-online.target cinevault.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/cinevault/backend
+EnvironmentFile=/etc/cinevault.env
+ExecStart=/usr/bin/npm run backup
+ExecStart=/usr/bin/rclone copy /var/lib/cinevault/off-device-outbox gdrive:CineVault/Backups --config=/home/ubuntu/.config/rclone/rclone.conf --include=*.cvbackup --check-first --transfers=2 --log-level=INFO --log-file=/var/lib/cinevault/off-device-outbox/rclone-upload.log
+
+[Install]
+WantedBy=multi-user.target

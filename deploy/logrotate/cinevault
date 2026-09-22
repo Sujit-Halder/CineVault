@@ -9,3 +9,15 @@
     copytruncate
     create 0640 ubuntu ubuntu
 }
+
+/var/lib/cinevault/off-device-outbox/rclone-upload.log {
+    weekly
+    rotate 12
+    size 5M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 ubuntu ubuntu
+}

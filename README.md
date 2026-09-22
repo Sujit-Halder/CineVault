@@ -296,6 +296,8 @@ AUTOMATIC_MONTHLY_RETENTION_MONTHS=12
 
 Google Drive for desktop can be used without granting CineVault Google-account credentials: choose a synchronized or mirrored Drive folder as `BACKUP_MIRROR_DIR`. CineVault encrypts the backup locally before the Drive client uploads it.
 
+On a headless EC2 server, use the maintained `rclone` systemd service and timer under `deploy/systemd`. CineVault still performs the database backup, encryption, and immediate verification; rclone receives only `.cvbackup` ciphertext from the local outbox. Never mount Google Drive as `MOVIE_TRACKER_DATA_DIR` and never place the live SQLite database in a synchronized directory.
+
 The restore command checks `backend/data/server.lock` and refuses to replace the database while the API process is active.
 
 ### Recovery procedure
@@ -738,6 +740,83 @@ ls -lh /opt/cinevault/backend/logs
 ### 7. Protect recoverability
 
 Use encrypted EBS snapshots or AWS Backup in addition to application backups. Copy encrypted `.cvbackup` files to a private off-instance destination such as S3 using an EC2 IAM role rather than static AWS keys. Test decryption and isolated restoration periodically. A backup stored only on the same EC2 volume does not protect against volume loss or account compromise.
+
+#### Google Drive encrypted backup from EC2
+
+Install rclone and configure a Google Drive remote named `gdrive` while signed in as the same Linux account used by the supplied timer:
+
+```bash
+sudo apt update
+sudo apt install -y rclone
+rclone version
+rclone config
+```
+
+Create a new `drive` remote, supply a personal Google OAuth desktop-app client ID and secret, choose the `drive.file` scope, leave the root-folder and service-account fields empty, complete browser authorization, decline Shared Drive, and save it as `gdrive`. The `drive.file` scope allows rclone to manage only files it creates while leaving the remainder of the account unavailable. Protect and test the resulting configuration:
+
+```bash
+chmod 700 ~/.config/rclone
+chmod 600 ~/.config/rclone/rclone.conf
+rclone config file
+rclone lsd gdrive:
+```
+
+Create the encrypted local outbox:
+
+```bash
+sudo mkdir -p /var/lib/cinevault/off-device-outbox
+sudo chown ubuntu:ubuntu /var/lib/cinevault/off-device-outbox
+sudo chmod 700 /var/lib/cinevault/off-device-outbox
+```
+
+Add these values to `/etc/cinevault.env`. Generate and retain the passphrase in a password manager outside EC2 and outside Google Drive; losing it makes every `.cvbackup` unrecoverable:
+
+```dotenv
+BACKUP_MIRROR_DIR=/var/lib/cinevault/off-device-outbox
+BACKUP_ENCRYPTION_PASSPHRASE=replace-with-a-long-random-passphrase
+```
+
+Restart CineVault so website backup requests also create encrypted mirror copies:
+
+```bash
+sudo systemctl restart cinevault
+```
+
+Install and start the daily upload timer:
+
+```bash
+sudo cp /opt/cinevault/deploy/systemd/cinevault-google-drive-backup.service /etc/systemd/system/
+sudo cp /opt/cinevault/deploy/systemd/cinevault-google-drive-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cinevault-google-drive-backup.timer
+sudo systemctl start cinevault-google-drive-backup.service
+sudo systemctl status cinevault-google-drive-backup.service
+sudo systemctl list-timers cinevault-google-drive-backup.timer
+find /var/lib/cinevault/off-device-outbox -maxdepth 1 -type f -name '*.cvbackup' -printf '%f\n'
+```
+
+The service assumes `User=ubuntu`, `/usr/bin/npm`, `/usr/bin/rclone`, and the rclone configuration at `/home/ubuntu/.config/rclone/rclone.conf`. Adjust those values in the installed service if `systemctl cat cinevault`, `which npm`, `which rclone`, or `rclone config file` reports different values. It runs daily at 03:15 in the EC2 system timezone with up to 30 minutes of randomized delay and catches up after downtime.
+
+Verify Drive content and inspect upload logs:
+
+```bash
+rclone lsl gdrive:CineVault/Backups
+sudo journalctl -u cinevault-google-drive-backup.service -n 100 --no-pager
+tail -n 100 /var/lib/cinevault/off-device-outbox/rclone-upload.log
+```
+
+The timer uses `rclone copy`, not `sync`: it uploads missing or changed encrypted files but never deletes older Drive backups. Local outbox retention still follows CineVault's manual-backup policy; Google Drive retention should be reviewed separately according to available account storage.
+
+Test recovery without touching the live database:
+
+```bash
+mkdir -p /tmp/cinevault-restore-test
+rclone copy gdrive:CineVault/Backups /tmp/cinevault-restore-test --include '*.cvbackup'
+cd /opt/cinevault/backend
+npm run decrypt-backup -- "/tmp/cinevault-restore-test/SELECTED_FILE.sqlite.cvbackup" "/tmp/cinevault-restore-test/recovered.sqlite"
+```
+
+Then open `recovered.sqlite` with SQLite and run `PRAGMA integrity_check;`. Remove the temporary recovery directory after the test. Do not run the application restore command merely to test cloud retrieval.
 
 ### 8. Production verification
 
