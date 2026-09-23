@@ -97,7 +97,7 @@ function createSchema(database) {
         CREATE TABLE IF NOT EXISTS content_items (
             id TEXT PRIMARY KEY, type TEXT NOT NULL CHECK(type IN ('movie','series')), subtype TEXT NOT NULL DEFAULT '',
             title TEXT NOT NULL, original_title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'Announced',
-            production_status TEXT NOT NULL DEFAULT 'Unknown', release_status TEXT NOT NULL DEFAULT 'Unscheduled',
+            production_status TEXT NOT NULL DEFAULT 'Announced', release_status TEXT NOT NULL DEFAULT 'Unscheduled',
             release_date TEXT,series_start_date TEXT,series_end_date TEXT,series_continuing INTEGER NOT NULL DEFAULT 0,series_network TEXT NOT NULL DEFAULT '',
             watch_date TEXT, runtime_minutes INTEGER, director TEXT NOT NULL DEFAULT '',
             casts TEXT NOT NULL DEFAULT '', personal_rating TEXT NOT NULL DEFAULT '', production_company TEXT NOT NULL DEFAULT '',
@@ -111,7 +111,7 @@ function createSchema(database) {
         CREATE TABLE IF NOT EXISTS seasons (
             id TEXT PRIMARY KEY, series_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
             season_number INTEGER, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'Announced',
-            production_status TEXT NOT NULL DEFAULT 'Unknown', release_status TEXT NOT NULL DEFAULT 'Unscheduled',
+            production_status TEXT NOT NULL DEFAULT 'Announced', release_status TEXT NOT NULL DEFAULT 'Unscheduled',
             release_date TEXT, poster_url TEXT NOT NULL DEFAULT '', synopsis TEXT NOT NULL DEFAULT '', completion_status TEXT NOT NULL DEFAULT 'Not Started', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             UNIQUE(series_id, season_number)
         );
@@ -1357,6 +1357,47 @@ function removeMetadataJsonColumns(database) {
     } catch(error) { database.exec('ROLLBACK'); throw error; }
 }
 
+// Updates the schema defaults used when a production status is not supplied.
+function migrateProductionStatusDefaults(database) {
+    const version=42;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    const targets=['content_items','seasons'];
+    const definitions=database.prepare(`SELECT name,sql FROM sqlite_schema WHERE type='table' AND name IN ('content_items','seasons')`).all();
+    const legacy="production_status TEXT NOT NULL DEFAULT 'Unknown'";
+    const replacement="production_status TEXT NOT NULL DEFAULT 'Announced'";
+    const pending=definitions.filter((definition) => definition.sql?.includes(legacy));
+    const backup=pending.length ? createBackup(database,'pre-production-status-default-migration') : null;
+    const dependentSchema=new Map(targets.map((table) => [table,database.prepare(`SELECT sql FROM sqlite_schema WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type,name`).all(table).map((row) => row.sql)]));
+    database.exec('PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON');
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        pending.forEach((definition) => {
+            const table=definition.name; const legacyTable=`${table}_production_default_legacy`;
+            database.exec(`ALTER TABLE ${table} RENAME TO ${legacyTable}`);
+            const createSql=definition.sql
+                .replace(new RegExp(`CREATE TABLE\\s+(?:"${table}"|${table})`,'i'),`CREATE TABLE ${table}`)
+                .replace(legacy,replacement);
+            database.exec(createSql);
+            const columns=database.prepare(`PRAGMA table_info(${legacyTable})`).all().map((column) => column.name);
+            database.exec(`INSERT INTO ${table}(${columns.join(',')}) SELECT ${columns.join(',')} FROM ${legacyTable}`);
+            database.exec(`DROP TABLE ${legacyTable}`);
+            dependentSchema.get(table).forEach((sql) => database.exec(sql));
+        });
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString());
+        database.exec('COMMIT');
+    } catch(error) {
+        database.exec('ROLLBACK');
+        database.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON');
+        throw error;
+    }
+    database.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON');
+    const defaults=targets.map((table) => ({ table,value:database.prepare(`PRAGMA table_info(${table})`).all().find((column) => column.name === 'production_status')?.dflt_value }));
+    if (defaults.some((item) => item.value !== "'Announced'")) throw new Error('Production-status schema default verification failed');
+    const foreignKeyIssues=database.prepare('PRAGMA foreign_key_check').all();
+    if (foreignKeyIssues.length) throw new Error(`Production-status schema migration produced ${foreignKeyIssues.length} foreign-key issues`);
+    return { version,updated:pending.map((definition) => definition.name),backup:backup ? path.basename(backup) : null };
+}
+
 // Creates a verified SQLite snapshot in the rotating backup directory.
 function createBackup(database, label = 'automatic') {
     if (freshInstallation && !startupMigrationsComplete && label.startsWith('pre-')) return null;
@@ -1431,6 +1472,7 @@ const shriKrishnaViewingLanguageReport = migrateShriKrishnaViewingLanguages(data
 const accountArchitectureReport = migrateAccountArchitecture(database);
 const relationalMetadataReport = migrateRelationalMetadata(database);
 const metadataJsonRemovalReport = removeMetadataJsonColumns(database);
+const productionStatusDefaultReport = migrateProductionStatusDefaults(database);
 if (freshInstallation) {
     database.prepare("DELETE FROM audit_log WHERE actor='migration'").run();
 } else {
@@ -1472,7 +1514,8 @@ if (shriKrishnaViewingLanguageReport) logger.event('info','database.migration.co
 if (accountArchitectureReport) logger.event('info','database.migration.completed','Account architecture migration completed',accountArchitectureReport);
 if (relationalMetadataReport) logger.event('info','database.migration.completed','Relational metadata migration completed',relationalMetadataReport);
 if (metadataJsonRemovalReport) logger.event('info','database.migration.completed','Metadata JSON columns removed after relational parity verification',metadataJsonRemovalReport);
+if (productionStatusDefaultReport) logger.event('info','database.migration.completed','Production-status schema defaults updated',productionStatusDefaultReport);
 }
 startupMigrationsComplete = true;
 
-module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport };
+module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport,productionStatusDefaultReport };

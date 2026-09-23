@@ -124,7 +124,9 @@ test('a clean installation creates runtime state without migration artifacts',()
     assert.doesNotMatch(result.stdout,/database\.migration\.completed/);
     assert.deepEqual(fs.readdirSync(cleanDirectory),['movie-tracker.sqlite']);
     const cleanDatabase=new DatabaseSync(path.join(cleanDirectory,'movie-tracker.sqlite'),{ readOnly:true });
-    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,41);
+    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,42);
+    assert.equal(cleanDatabase.prepare('PRAGMA table_info(content_items)').all().find((column) => column.name === 'production_status').dflt_value,"'Announced'");
+    assert.equal(cleanDatabase.prepare('PRAGMA table_info(seasons)').all().find((column) => column.name === 'production_status').dflt_value,"'Announced'");
     assert.equal(cleanDatabase.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
     assert.equal(cleanDatabase.prepare("SELECT COUNT(*) count FROM audit_log WHERE actor='migration'").get().count,0);
     cleanDatabase.close();
