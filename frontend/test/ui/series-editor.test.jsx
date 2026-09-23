@@ -5,7 +5,7 @@ import { expect,it,vi } from 'vitest';
 import MovieForm from '../../src/components/MovieForm';
 
 const catalogs={
-  countries:[],genres:[],ratingSystems:[],watchSources:[],
+  countries:[],genres:[],ratingSystems:[],watchSources:[],languages:[{ tag:'en',label:'English' }],
   presentationForms:{ movie:[],series:[] },
   subtypes:{ movie:['Feature Film'],series:['Regular Series','Limited Series','Anthology Series'] },
 };
@@ -15,7 +15,7 @@ const series={
   productionStatus:'Completed',releaseStatus:'Ended',releaseDate:'2023-01-01',seriesStartDate:'2023-01-01',seriesEndDate:'2024-12-31',seriesNetwork:'',
   seriesCredits:[],productionCompanies:[],contentRatings:[],presentationForms:[],watchSources:[],watchHistory:[],contentLinks:[],genres:[],language:[],awards:[],tags:[],
   seasons:[{ id:'season-1',seasonNumber:1,title:'Season 1',productionStatus:'Completed',releaseStatus:'Released',releaseDate:'2024-01-01',posterUrl:'',synopsis:'',episodes:[
-    { id:'episode-1',episodeNumber:1,title:'First',episodeType:'Pilot',director:'',duration:'40',airDate:'2024-01-02',summary:'',watchHistory:[{ id:'watch-1',watchedAt:'2024-01-10T12:00:00.000Z' }] },
+    { id:'episode-1',episodeNumber:1,title:'First',episodeType:'Pilot',director:'',duration:'40',airDate:'2024-01-02',summary:'',watchHistory:[{ id:'watch-1',watchedAt:'2024-01-10T12:00:00.000Z',languageTag:'en' }] },
     { id:'episode-2',episodeNumber:2,title:'Second',episodeType:'Regular',director:'',duration:'42',airDate:'2024-01-09',summary:'',watchHistory:[] },
   ]}],
 };

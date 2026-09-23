@@ -16,7 +16,7 @@ const API = import.meta.env.VITE_API_URL;
 // Manages server-backed library queries, editing, pagination, exports, and notifications.
 const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged, onTrashChanged }) => {
   const [result, setResult] = useState({ items:[], total:0, page:1, pages:0 });
-  const [catalogs, setCatalogs] = useState({ countries:[], ratingSystems:[], genres:[],presentationForms:{ movie:[],series:[] },watchSources:[],subtypes:{ movie:[],series:[] },productionCompanies:[],linkDomains:[] });
+  const [catalogs, setCatalogs] = useState({ countries:[],languages:[], ratingSystems:[], genres:[],presentationForms:{ movie:[],series:[] },watchSources:[],subtypes:{ movie:[],series:[] },productionCompanies:[],linkDomains:[] });
   const [notifications, setNotifications] = useState([]);
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);

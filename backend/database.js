@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const { normalizeCountryCodes, normalizeContentRatings, normalizeWatchSources, normalizeSubtype } = require('./catalogs');
+const { normalizeCountryCodes,normalizeLanguageTags, normalizeContentRatings, normalizeWatchSources, normalizeSubtype } = require('./catalogs');
 const { normalizeSingleLineText, normalizeCommaSeparatedText, normalizeMultilineText } = require('./text-normalization');
 const { fullCompanyName,companyKey } = require('./company-normalization');
 const logger = require('./logger');
@@ -140,11 +140,11 @@ function createSchema(database) {
         );
         CREATE TABLE IF NOT EXISTS watch_history (
             id TEXT PRIMARY KEY, content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
-            watched_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            watched_at TEXT NOT NULL, language_tag TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS episode_watch_history (
             id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
-            watched_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            watched_at TEXT NOT NULL, language_tag TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS content_links (
             id TEXT PRIMARY KEY, content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
@@ -1115,6 +1115,248 @@ function migrateRegularSeriesSubtype(database) {
     } catch(error) { database.exec('ROLLBACK'); throw error; }
 }
 
+// Normalizes title languages to BCP 47 and assigns unambiguous title languages to existing viewings.
+function migrateBcp47Languages(database) {
+    const version=36;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    const watchColumns=new Set(database.prepare('PRAGMA table_info(watch_history)').all().map((column) => column.name));
+    const episodeWatchColumns=new Set(database.prepare('PRAGMA table_info(episode_watch_history)').all().map((column) => column.name));
+    createBackup(database,'pre-bcp47-language-migration');
+    const rows=database.prepare('SELECT id,title,languages_json FROM content_items').all();
+    const ambiguous=[]; const unmapped=[]; let titlesNormalized=0; let movieWatchesUpdated=0; let episodeWatchesUpdated=0;
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        if (!watchColumns.has('language_tag')) database.exec("ALTER TABLE watch_history ADD COLUMN language_tag TEXT NOT NULL DEFAULT ''");
+        if (!episodeWatchColumns.has('language_tag')) database.exec("ALTER TABLE episode_watch_history ADD COLUMN language_tag TEXT NOT NULL DEFAULT ''");
+        const updateLanguages=database.prepare('UPDATE content_items SET languages_json=? WHERE id=?');
+        const updateMovieWatches=database.prepare("UPDATE watch_history SET language_tag=?,updated_at=? WHERE content_id=? AND language_tag=''");
+        const updateEpisodeWatches=database.prepare(`UPDATE episode_watch_history SET language_tag=?,updated_at=? WHERE language_tag='' AND episode_id IN (
+            SELECT e.id FROM episodes e JOIN seasons s ON s.id=e.season_id WHERE s.series_id=?)`);
+        const now=new Date().toISOString();
+        rows.forEach((row) => {
+            let stored=[]; try { stored=JSON.parse(row.languages_json || '[]'); } catch { stored=[]; }
+            const tags=normalizeLanguageTags(stored);
+            const missing=stored.filter((value) => !normalizeLanguageTags([value]).length);
+            if (missing.length) unmapped.push({ id:row.id,title:row.title,values:missing });
+            if (JSON.stringify(tags) !== JSON.stringify(stored)) { updateLanguages.run(JSON.stringify(tags),row.id); titlesNormalized += 1; }
+            if (tags.length === 1) {
+                movieWatchesUpdated += updateMovieWatches.run(tags[0],now,row.id).changes;
+                episodeWatchesUpdated += updateEpisodeWatches.run(tags[0],now,row.id).changes;
+            } else if (tags.length > 1) ambiguous.push({ id:row.id,title:row.title,languages:tags });
+        });
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,now);
+        database.exec('COMMIT');
+        return { version,titlesNormalized,movieWatchesUpdated,episodeWatchesUpdated,ambiguous,unmapped };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
+// Enforces a BCP 47 audio language on every newly written movie and episode viewing.
+function requireWatchLanguages(database) {
+    const version=37;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    database.exec(`CREATE TRIGGER IF NOT EXISTS watch_history_language_required_insert BEFORE INSERT ON watch_history
+            WHEN trim(new.language_tag)='' BEGIN SELECT RAISE(ABORT,'Watch language is required'); END;
+        CREATE TRIGGER IF NOT EXISTS watch_history_language_required_update BEFORE UPDATE OF language_tag ON watch_history
+            WHEN trim(new.language_tag)='' BEGIN SELECT RAISE(ABORT,'Watch language is required'); END;
+        CREATE TRIGGER IF NOT EXISTS episode_watch_language_required_insert BEFORE INSERT ON episode_watch_history
+            WHEN trim(new.language_tag)='' BEGIN SELECT RAISE(ABORT,'Episode watch language is required'); END;
+        CREATE TRIGGER IF NOT EXISTS episode_watch_language_required_update BEFORE UPDATE OF language_tag ON episode_watch_history
+            WHEN trim(new.language_tag)='' BEGIN SELECT RAISE(ABORT,'Episode watch language is required'); END;`);
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString());
+    return { version,triggers:4 };
+}
+
+// Adds the confirmed Hindi and Bengali viewing chronology for every Shri Krishna episode.
+function migrateShriKrishnaViewingLanguages(database) {
+    const version=38;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    const series=database.prepare("SELECT id,title FROM content_items WHERE type='series' AND lower(trim(title))='shri krishna'").get();
+    if (!series) {
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString());
+        return { version,updated:0,inserted:0,title:null };
+    }
+    const latestRows=database.prepare(`SELECT eh.id,eh.episode_id,eh.watched_at FROM episode_watch_history eh
+        JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id
+        WHERE s.series_id=? AND eh.watched_at=(SELECT MAX(candidate.watched_at) FROM episode_watch_history candidate WHERE candidate.episode_id=eh.episode_id)
+        ORDER BY e.episode_number`).all(series.id);
+    createBackup(database,'pre-shri-krishna-viewing-language-migration');
+    const now=new Date().toISOString(); let updated=0; let inserted=0;
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        const update=database.prepare('UPDATE episode_watch_history SET language_tag=?,updated_at=? WHERE id=?');
+        const exists=database.prepare('SELECT 1 FROM episode_watch_history WHERE episode_id=? AND watched_at=?');
+        const insert=database.prepare('INSERT INTO episode_watch_history(id,episode_id,watched_at,language_tag,created_at,updated_at) VALUES(?,?,?,?,?,?)');
+        latestRows.forEach((row) => {
+            updated += update.run('hi',now,row.id).changes;
+            const earlier=new Date(row.watched_at);
+            earlier.setUTCFullYear(earlier.getUTCFullYear()-10);
+            const watchedAt=earlier.toISOString();
+            if (!exists.get(row.episode_id,watchedAt)) { insert.run(crypto.randomUUID(),row.episode_id,watchedAt,'bn',now,now); inserted += 1; }
+        });
+        database.prepare(`INSERT INTO audit_log(action,entity_type,entity_id,details_json,actor,outcome,metadata_json,created_at)
+            VALUES('bulk_update','series',?,?,?,'success','{}',?)`).run(series.id,JSON.stringify({ field:'episodeWatchLanguages',latestLanguage:'hi',historicalLanguage:'bn',yearsEarlier:10,updated,inserted }),'migration',now);
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,now);
+        database.exec('COMMIT');
+        return { version,title:series.title,updated,inserted };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
+// Adds persistent accounts, invitations, sessions, recovery tokens, and transitional title ownership.
+function migrateAccountArchitecture(database) {
+    const version=39;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    createBackup(database,'pre-account-architecture-migration');
+    const columns=new Set(database.prepare('PRAGMA table_info(content_items)').all().map((column) => column.name));
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        database.exec(`CREATE TABLE IF NOT EXISTS app_users (
+            id TEXT PRIMARY KEY,email TEXT NOT NULL COLLATE NOCASE UNIQUE,display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,password_salt TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',
+            status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_login_at TEXT,
+            CHECK(role IN ('owner','member')),CHECK(status IN ('active','disabled'))
+        );
+        CREATE TABLE IF NOT EXISTS auth_invitations (
+            id TEXT PRIMARY KEY,email TEXT NOT NULL COLLATE NOCASE,token_hash TEXT NOT NULL UNIQUE,
+            invited_by TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,expires_at TEXT NOT NULL,
+            accepted_at TEXT,created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+            csrf_hash TEXT NOT NULL,created_at TEXT NOT NULL,expires_at TEXT NOT NULL,last_seen_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,used_at TEXT,created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS library_entries (
+            id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+            content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
+            personal_rating TEXT, favorite INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,deleted_at TEXT,UNIQUE(user_id,content_id),CHECK(favorite IN (0,1))
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_expiry ON auth_sessions(user_id,expires_at);
+        CREATE INDEX IF NOT EXISTS idx_auth_invitations_email ON auth_invitations(email,expires_at);
+        CREATE INDEX IF NOT EXISTS idx_password_resets_user_expiry ON password_reset_tokens(user_id,expires_at);
+        CREATE INDEX IF NOT EXISTS idx_library_entries_user_deleted ON library_entries(user_id,deleted_at);
+        `);
+        if (!columns.has('owner_user_id')) database.exec('ALTER TABLE content_items ADD COLUMN owner_user_id TEXT');
+        database.exec('CREATE INDEX IF NOT EXISTS idx_content_owner_state ON content_items(owner_user_id,deleted_at,updated_at DESC)');
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString());
+        database.exec('COMMIT');
+        return { version,tables:5,ownershipColumn:true };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
+// Materializes repeatable title metadata into relational link tables while legacy JSON remains a compatibility projection.
+function migrateRelationalMetadata(database) {
+    const version=40;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    createBackup(database,'pre-relational-metadata-migration');
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        database.exec(`CREATE TABLE IF NOT EXISTS metadata_terms (
+            id INTEGER PRIMARY KEY,category TEXT NOT NULL,name TEXT NOT NULL COLLATE NOCASE,
+            created_at TEXT NOT NULL,UNIQUE(category,name)
+        );
+        CREATE TABLE IF NOT EXISTS content_metadata_terms (
+            content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
+            term_id INTEGER NOT NULL REFERENCES metadata_terms(id) ON DELETE RESTRICT,display_order INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(content_id,term_id)
+        );
+        CREATE TABLE IF NOT EXISTS content_languages (
+            content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,language_tag TEXT NOT NULL,
+            display_order INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(content_id,language_tag)
+        );
+        CREATE TABLE IF NOT EXISTS content_countries (
+            content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,country_code TEXT NOT NULL,
+            display_order INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(content_id,country_code)
+        );
+        CREATE TABLE IF NOT EXISTS content_official_ratings (
+            content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,territory TEXT NOT NULL,code TEXT NOT NULL,
+            rating_system TEXT NOT NULL DEFAULT '',previous_code TEXT NOT NULL DEFAULT '',classification_basis TEXT NOT NULL DEFAULT '',classification_confidence TEXT NOT NULL DEFAULT '',
+            display_order INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(content_id,territory)
+        );
+        CREATE TABLE IF NOT EXISTS content_watch_sources (
+            id TEXT PRIMARY KEY,content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
+            method TEXT NOT NULL,provider TEXT NOT NULL DEFAULT '',display_order INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(content_id,method,provider)
+        );
+        CREATE INDEX IF NOT EXISTS idx_metadata_terms_category_name ON metadata_terms(category,name);
+        CREATE INDEX IF NOT EXISTS idx_content_metadata_term ON content_metadata_terms(term_id,content_id);
+        CREATE INDEX IF NOT EXISTS idx_content_languages_tag ON content_languages(language_tag,content_id);
+        CREATE INDEX IF NOT EXISTS idx_content_countries_code ON content_countries(country_code,content_id);
+        CREATE INDEX IF NOT EXISTS idx_content_ratings_code ON content_official_ratings(territory,code,content_id);
+        CREATE INDEX IF NOT EXISTS idx_content_watch_sources_method ON content_watch_sources(method,provider,content_id);`);
+        const term=database.prepare('INSERT INTO metadata_terms(category,name,created_at) VALUES(?,?,?) ON CONFLICT(category,name) DO UPDATE SET name=excluded.name RETURNING id');
+        const link=database.prepare('INSERT OR IGNORE INTO content_metadata_terms(content_id,term_id,display_order) VALUES(?,?,?)');
+        const language=database.prepare('INSERT OR IGNORE INTO content_languages(content_id,language_tag,display_order) VALUES(?,?,?)');
+        const country=database.prepare('INSERT OR IGNORE INTO content_countries(content_id,country_code,display_order) VALUES(?,?,?)');
+        const rating=database.prepare('INSERT OR REPLACE INTO content_official_ratings(content_id,territory,code,rating_system,previous_code,classification_basis,classification_confidence,display_order) VALUES(?,?,?,?,?,?,?,?)');
+        const source=database.prepare('INSERT OR IGNORE INTO content_watch_sources(id,content_id,method,provider,display_order) VALUES(?,?,?,?,?)');
+        const parse=(value) => { try { const result=JSON.parse(value || '[]'); return Array.isArray(result) ? result : []; } catch { return []; } };
+        const now=new Date().toISOString(); let links=0;
+        database.prepare('SELECT id,genres_json,presentation_forms_json,languages_json,awards_json,tags_json,countries_json,content_ratings_json,watch_sources_json FROM content_items').all().forEach((row) => {
+            [['genre',row.genres_json],['presentation',row.presentation_forms_json],['award',row.awards_json],['tag',row.tags_json]].forEach(([category,json]) => parse(json).forEach((name,index) => { if (!name) return; link.run(row.id,term.get(category,String(name),now).id,index); links += 1; }));
+            parse(row.languages_json).forEach((value,index) => language.run(row.id,String(value),index));
+            parse(row.countries_json).forEach((value,index) => country.run(row.id,String(value),index));
+            parse(row.content_ratings_json).forEach((value,index) => { if (value?.territory && value?.code) rating.run(row.id,String(value.territory),String(value.code),String(value.system || ''),String(value.previousCode || ''),String(value.classificationBasis || ''),String(value.classificationConfidence || ''),index); });
+            parse(row.watch_sources_json).forEach((value,index) => { const record=typeof value === 'string' ? { method:value,provider:'' } : value; if (record?.method) source.run(crypto.randomUUID(),row.id,String(record.method),String(record.provider || ''),index); });
+        });
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,now);
+        database.exec('COMMIT');
+        return { version,links,tables:6 };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
+// Verifies relational parity and removes superseded repeatable-metadata JSON columns from the live content table.
+function removeMetadataJsonColumns(database) {
+    const version=41;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    const columns=new Set(database.prepare('PRAGMA table_info(content_items)').all().map((column) => column.name));
+    const legacyColumns=['genres_json','presentation_forms_json','languages_json','awards_json','tags_json','countries_json','content_ratings_json','watch_sources_json'].filter((column) => columns.has(column));
+    if (!legacyColumns.length) {
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString());
+        return { version,removed:[],verified:0 };
+    }
+    const ratingColumns=new Set(database.prepare('PRAGMA table_info(content_official_ratings)').all().map((column) => column.name));
+    for (const [name,declaration] of [['rating_system',"TEXT NOT NULL DEFAULT ''"],['previous_code',"TEXT NOT NULL DEFAULT ''"],['classification_basis',"TEXT NOT NULL DEFAULT ''"],['classification_confidence',"TEXT NOT NULL DEFAULT ''"]]) {
+        if (!ratingColumns.has(name)) database.exec(`ALTER TABLE content_official_ratings ADD COLUMN ${name} ${declaration}`);
+    }
+    const parse=(value) => { try { const result=JSON.parse(value || '[]'); return Array.isArray(result) ? result : []; } catch { return []; } };
+    if (columns.has('content_ratings_json')) {
+        const updateRating=database.prepare('UPDATE content_official_ratings SET rating_system=?,previous_code=?,classification_basis=?,classification_confidence=? WHERE content_id=? AND territory=?');
+        database.prepare('SELECT id,content_ratings_json FROM content_items').all().forEach((row) => parse(row.content_ratings_json).forEach((value) => updateRating.run(value.system || '',value.previousCode || '',value.classificationBasis || '',value.classificationConfidence || '',row.id,value.territory)));
+    }
+    const term=database.prepare(`SELECT mt.name FROM content_metadata_terms cmt JOIN metadata_terms mt ON mt.id=cmt.term_id WHERE cmt.content_id=? AND mt.category=? ORDER BY cmt.display_order`);
+    const language=database.prepare('SELECT language_tag value FROM content_languages WHERE content_id=? ORDER BY display_order');
+    const country=database.prepare('SELECT country_code value FROM content_countries WHERE content_id=? ORDER BY display_order');
+    const rating=database.prepare(`SELECT territory,rating_system system,code,previous_code previousCode,classification_basis classificationBasis,classification_confidence classificationConfidence
+        FROM content_official_ratings WHERE content_id=? ORDER BY display_order`);
+    const source=database.prepare('SELECT method,provider FROM content_watch_sources WHERE content_id=? ORDER BY display_order');
+    const mismatches=[];
+    const rows=database.prepare(`SELECT id,${legacyColumns.join(',')} FROM content_items`).all();
+    const compare=(row,column,relational) => { if (columns.has(column) && JSON.stringify(parse(row[column])) !== JSON.stringify(relational)) mismatches.push({ id:row.id,column }); };
+    rows.forEach((row) => {
+        compare(row,'genres_json',term.all(row.id,'genre').map((item) => item.name));
+        compare(row,'presentation_forms_json',term.all(row.id,'presentation').map((item) => item.name));
+        compare(row,'languages_json',language.all(row.id).map((item) => item.value));
+        compare(row,'awards_json',term.all(row.id,'award').map((item) => item.name));
+        compare(row,'tags_json',term.all(row.id,'tag').map((item) => item.name));
+        compare(row,'countries_json',country.all(row.id).map((item) => item.value));
+        compare(row,'content_ratings_json',rating.all(row.id).map((item) => Object.fromEntries(Object.entries(item).filter(([,value]) => value !== ''))));
+        compare(row,'watch_sources_json',source.all(row.id));
+    });
+    if (mismatches.length) throw new Error(`Relational metadata parity failed for ${mismatches.length} values; JSON columns were not removed`);
+    const backup=createBackup(database,'pre-metadata-json-removal');
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        legacyColumns.forEach((column) => database.exec(`ALTER TABLE content_items DROP COLUMN ${column}`));
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString());
+        database.exec('COMMIT');
+        return { version,removed:legacyColumns,verified:rows.length,backup:backup ? path.basename(backup) : null };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
 // Creates a verified SQLite snapshot in the rotating backup directory.
 function createBackup(database, label = 'automatic') {
     if (freshInstallation && !startupMigrationsComplete && label.startsWith('pre-')) return null;
@@ -1183,6 +1425,12 @@ const legacyStatusRemovalReport = removeLegacyStatusColumns(database);
 const productionStatusNormalizationReport = migrateUnknownProductionStatuses(database);
 const filmingProductionLabelReport = migrateFilmingProductionLabel(database);
 const regularSeriesSubtypeReport = migrateRegularSeriesSubtype(database);
+const bcp47LanguageReport = migrateBcp47Languages(database);
+const requiredWatchLanguageReport = requireWatchLanguages(database);
+const shriKrishnaViewingLanguageReport = migrateShriKrishnaViewingLanguages(database);
+const accountArchitectureReport = migrateAccountArchitecture(database);
+const relationalMetadataReport = migrateRelationalMetadata(database);
+const metadataJsonRemovalReport = removeMetadataJsonColumns(database);
 if (freshInstallation) {
     database.prepare("DELETE FROM audit_log WHERE actor='migration'").run();
 } else {
@@ -1218,7 +1466,13 @@ if (legacyStatusRemovalReport) logger.event('info','database.migration.completed
 if (productionStatusNormalizationReport) logger.event('info','database.migration.completed','Unknown production statuses normalized',productionStatusNormalizationReport);
 if (filmingProductionLabelReport) logger.event('info','database.migration.completed','Filming and production status label normalized',filmingProductionLabelReport);
 if (regularSeriesSubtypeReport) logger.event('info','database.migration.completed','Regular series subtype migration completed',regularSeriesSubtypeReport);
+if (bcp47LanguageReport) logger.event('info','database.migration.completed','BCP 47 language migration completed',{ ...bcp47LanguageReport,ambiguous:bcp47LanguageReport.ambiguous.length,unmapped:bcp47LanguageReport.unmapped.length });
+if (requiredWatchLanguageReport) logger.event('info','database.migration.completed','Mandatory watch-language migration completed',requiredWatchLanguageReport);
+if (shriKrishnaViewingLanguageReport) logger.event('info','database.migration.completed','Shri Krishna viewing-language migration completed',shriKrishnaViewingLanguageReport);
+if (accountArchitectureReport) logger.event('info','database.migration.completed','Account architecture migration completed',accountArchitectureReport);
+if (relationalMetadataReport) logger.event('info','database.migration.completed','Relational metadata migration completed',relationalMetadataReport);
+if (metadataJsonRemovalReport) logger.event('info','database.migration.completed','Metadata JSON columns removed after relational parity verification',metadataJsonRemovalReport);
 }
 startupMigrationsComplete = true;
 
-module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport };
+module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport };

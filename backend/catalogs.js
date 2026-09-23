@@ -9,6 +9,33 @@ const COUNTRY_ALIASES = {
 };
 const { normalizeSingleLineText } = require('./text-normalization');
 
+// Defines the curated BCP 47 language tags used for audiovisual works and viewing audio.
+const LANGUAGES = [
+    ['af','Afrikaans'],['ar','Arabic'],['as','Assamese'],['bn','Bengali'],['bg','Bulgarian'],
+    ['cmn','Mandarin'],['yue','Cantonese'],['zh','Chinese (unspecified)'],['hr','Croatian'],['cs','Czech'],
+    ['da','Danish'],['nl','Dutch'],['en','English'],['fa','Persian'],['fil','Filipino'],['fi','Finnish'],
+    ['fr','French'],['de','German'],['el','Greek'],['gu','Gujarati'],['he','Hebrew'],['hi','Hindi'],
+    ['hu','Hungarian'],['id','Indonesian'],['it','Italian'],['ja','Japanese'],['kn','Kannada'],['ko','Korean'],
+    ['ml','Malayalam'],['ms','Malay'],['mr','Marathi'],['ne','Nepali'],['no','Norwegian'],['or','Odia'],
+    ['pa','Punjabi'],['pl','Polish'],['pt','Portuguese'],['ro','Romanian'],['ru','Russian'],['sr','Serbian'],
+    ['si','Sinhala'],['es','Spanish'],['sv','Swedish'],['ta','Tamil'],['te','Telugu'],['th','Thai'],
+    ['tr','Turkish'],['uk','Ukrainian'],['ur','Urdu'],['vi','Vietnamese'],
+].map(([tag,label]) => ({ tag,label }));
+
+const LANGUAGE_ALIASES = new Map(LANGUAGES.flatMap(({ tag,label }) => [[tag.toLowerCase(),tag],[label.toLowerCase(),tag]]));
+[
+    ['bangla','bn'],['farsi','fa'],['mandarin chinese','cmn'],['cantonese chinese','yue'],
+    ['chinese','zh'],['oriya','or'],['tagalog','fil'],['bahasa indonesia','id'],['bahasa melayu','ms'],
+].forEach(([name,tag]) => LANGUAGE_ALIASES.set(name,tag));
+
+// Converts supported language names and tags to canonical BCP 47 language tags.
+function normalizeLanguageTags(values = []) {
+    return [...new Set((Array.isArray(values) ? values : []).map((value) => {
+        const text=String(value || '').trim();
+        return LANGUAGE_ALIASES.get(text.toLowerCase()) || '';
+    }).filter(Boolean))];
+}
+
 // Creates the country catalog with popular territories ordered first.
 function buildCountries() {
     const displayNames = new Intl.DisplayNames(['en'], { type: 'region' });
@@ -142,6 +169,18 @@ const CONTENT_SUBTYPES = {
     series:['Regular Series','Limited Series','Anthology Series'],
 };
 
+const CONTENT_SUBTYPE_DESCRIPTIONS = {
+    'Feature Film':'A full-length movie intended as the primary presentation.',
+    Featurette:'A medium-length film longer than a short but shorter than a typical feature.',
+    'Short Film':'A self-contained film with a substantially shorter runtime than a feature.',
+    'Television Film':'A standalone movie produced primarily for television or a television platform.',
+    'Television Special':'A standalone television presentation outside a regular episodic season.',
+    'Interactive Film':'A film whose viewer choices can influence its sequence or outcome.',
+    'Regular Series':'An episodic series designed to continue across one or more seasons.',
+    'Limited Series':'A series planned as a finite story with a limited number of episodes or seasons.',
+    'Anthology Series':'A series whose stories, settings, or principal characters change between episodes or seasons.',
+};
+
 const EPISODE_TYPES = ['Regular','Pilot','Backdoor Pilot','Season Premiere','Midseason Premiere','Midseason Finale','Season Finale','Series Finale','Special','Holiday Special','Recap','Clip Show','Crossover','Two-Part Episode','Bonus','Webisode','Minisode','Unaired Episode'];
 
 const SUBTYPE_ALIASES = {
@@ -187,7 +226,7 @@ function normalizeWatchSources(values = []) {
 
 // Returns every maintained selection catalog used by the frontend.
 function getCatalogs() {
-    return { countries:buildCountries(), ratingSystems:RATING_SYSTEMS, genres:GENRES,presentationForms:PRESENTATION_FORMS,watchSources:WATCH_SOURCES,subtypes:CONTENT_SUBTYPES,episodeTypes:EPISODE_TYPES };
+    return { countries:buildCountries(),languages:LANGUAGES,ratingSystems:RATING_SYSTEMS, genres:GENRES,presentationForms:PRESENTATION_FORMS,watchSources:WATCH_SOURCES,subtypes:CONTENT_SUBTYPES,subtypeDescriptions:CONTENT_SUBTYPE_DESCRIPTIONS,episodeTypes:EPISODE_TYPES };
 }
 
-module.exports = { getCatalogs, normalizeCountryCodes, normalizeContentRatings, normalizeWatchSources, normalizeSubtype,normalizePresentationForms,EPISODE_TYPES };
+module.exports = { getCatalogs, normalizeCountryCodes,normalizeLanguageTags, normalizeContentRatings, normalizeWatchSources, normalizeSubtype,normalizePresentationForms,EPISODE_TYPES,LANGUAGES };

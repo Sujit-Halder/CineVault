@@ -13,16 +13,22 @@ process.env.MOVIE_TRACKER_SKIP_LEGACY_IMPORT = '1';
 const Model = require('../model');
 const { database,createBackup } = require('../database');
 const { getCatalogs } = require('../catalogs');
+const { runWithAccount } = require('../request-context');
 
 // Returns a complete valid payload that individual tests can specialize.
 function payload(overrides = {}) {
-    return {
+    const result={
         type:'movie',subtype:'Feature Film',title:'Test title',productionStatus:'Completed',releaseStatus:'Released',releaseDate:'2025-01-01',duration:'100',
         director:'Director',casts:'Performer',rating:'Rewatchable',productionCompany:'Test Studio',genres:['Drama'],presentationForms:['Live Action'],language:['English'],
         awards:[],tags:['Underrated'],countryOfOrigin:['USA'],contentRatings:[{ territory:'IND',code:'U/A' }],
         watchSources:[{ method:'subscription-streaming',provider:'Test Stream' }],watchHistory:[],contentLinks:[],seasons:[],
         ...overrides,
     };
+    result.watchHistory=(result.watchHistory || []).map((entry) => ({ ...entry,languageTag:Object.hasOwn(entry,'languageTag') ? entry.languageTag : 'en' }));
+    result.seasons=(result.seasons || []).map((season) => ({ ...season,episodes:(season.episodes || []).map((episode) => ({
+        ...episode,watchHistory:(episode.watchHistory || []).map((entry) => ({ ...entry,languageTag:Object.hasOwn(entry,'languageTag') ? entry.languageTag : 'en' })),
+    })) }));
+    return result;
 }
 
 test('schema migrations and rating normalization use the current model',() => {
@@ -30,6 +36,7 @@ test('schema migrations and rating normalization use the current model',() => {
     assert.ok(database.prepare('SELECT 1 FROM schema_migrations WHERE version=29').get());
     assert.ok(database.prepare('SELECT 1 FROM schema_migrations WHERE version=30').get());
     assert.deepEqual(database.prepare('PRAGMA table_info(content_items)').all().filter((column) => ['watch_date','source_reference'].includes(column.name)),[]);
+    assert.deepEqual(database.prepare('PRAGMA table_info(content_items)').all().filter((column) => column.name.endsWith('_json')),[]);
     const item = Model.addContent(payload({ title:'  Normalized rating  ',originalTitle:'  Original  ',subtype:'Animated Feature',director:'  Director  ',casts:'  First   Performer(V) ,  Second Performer (v)  ,, ',productionCompany:'  Test Studio  ',summary:'  Summary text  ',genres:['Fantasy'],presentationForms:['Animation'],contentRatings:[{ territory:'IN',code:'A' },{ territory:'IND',code:'U/A' }] }));
     assert.equal(item.title,'Normalized rating');
     assert.equal(item.subtype,'Feature Film');
@@ -43,6 +50,27 @@ test('schema migrations and rating normalization use the current model',() => {
     assert.equal(item.contentRatings[0].territory,'IN');
     assert.equal(item.contentRatings[0].code,'UA 13+');
     assert.equal(item.contentRatings.length,1);
+    assert.deepEqual(database.prepare('SELECT name FROM metadata_terms mt JOIN content_metadata_terms cmt ON cmt.term_id=mt.id WHERE cmt.content_id=? AND mt.category=?').all(item.id,'genre').map((row) => row.name),['Fantasy']);
+    assert.deepEqual(database.prepare('SELECT language_tag FROM content_languages WHERE content_id=?').all(item.id).map((row) => row.language_tag),['en']);
+});
+
+test('invited accounts receive isolated content, statistics, health, and exports',() => {
+    const now=new Date().toISOString();
+    for (const [id,email,role] of [['owner-a','one@gmail.com','owner'],['member-b','two@gmail.com','member']]) database.prepare(`INSERT OR IGNORE INTO app_users(id,email,display_name,password_hash,password_salt,role,status,created_at,updated_at) VALUES(?,?,?,'hash','salt',?,'active',?,?)`).run(id,email,email,role,now,now);
+    const first=runWithAccount({ id:'owner-a',email:'one@gmail.com',role:'owner' },() => Model.addContent(payload({ title:'Owner only title' })));
+    const second=runWithAccount({ id:'member-b',email:'two@gmail.com',role:'member' },() => Model.addContent(payload({ title:'Member only title' })));
+    runWithAccount({ id:'owner-a',email:'one@gmail.com',role:'owner' },() => {
+        assert.deepEqual(Model.getContent({ all:true }).items.map((item) => item.id),[first.id]);
+        assert.equal(Model.getById(second.id),null);
+        assert.equal(Model.getStatistics().summary.total,1);
+        assert.equal(Model.buildExportPayload().content.length,1);
+    });
+    runWithAccount({ id:'member-b',email:'two@gmail.com',role:'member' },() => {
+        assert.deepEqual(Model.getContent({ all:true }).items.map((item) => item.id),[second.id]);
+        assert.equal(Model.getById(first.id),null);
+        assert.equal(Model.getStatistics().summary.total,1);
+        assert.equal(Model.buildExportPayload().content.length,1);
+    });
 });
 
 test('watch sources retain specific providers and remove redundant duplicate labels',() => {
@@ -96,7 +124,7 @@ test('a clean installation creates runtime state without migration artifacts',()
     assert.doesNotMatch(result.stdout,/database\.migration\.completed/);
     assert.deepEqual(fs.readdirSync(cleanDirectory),['movie-tracker.sqlite']);
     const cleanDatabase=new DatabaseSync(path.join(cleanDirectory,'movie-tracker.sqlite'),{ readOnly:true });
-    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,35);
+    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,41);
     assert.equal(cleanDatabase.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
     assert.equal(cleanDatabase.prepare("SELECT COUNT(*) count FROM audit_log WHERE actor='migration'").get().count,0);
     cleanDatabase.close();
@@ -107,6 +135,21 @@ test('silent is a movie presentation form only',() => {
     assert.ok(catalogs.presentationForms.movie.some((group) => group.name === 'Silent'));
     assert.equal(catalogs.presentationForms.series.some((group) => group.name === 'Silent'),false);
     assert.equal(catalogs.subtypes.movie.includes('Silent'),false);
+});
+
+test('BCP 47 tags are used for title and per-viewing languages',() => {
+    const catalogs=getCatalogs();
+    assert.ok(catalogs.languages.some((language) => language.tag === 'cmn' && language.label === 'Mandarin'));
+    assert.ok(catalogs.languages.some((language) => language.tag === 'yue' && language.label === 'Cantonese'));
+    const item=Model.addContent(payload({ title:'Language-tagged viewing',language:['Bengali'],watchHistory:[{ watchedAt:'2025-01-02T10:00:00.000Z',languageTag:'bn' }] }));
+    assert.deepEqual(item.language,['bn']);
+    assert.equal(item.watchHistory[0].languageTag,'bn');
+    const exported=Model.buildExportPayload({ ids:[item.id],format:'clean' });
+    assert.equal(exported.content[0].watchHistory[0].languageTag,'bn');
+    Model.deleteContent(item.id); Model.permanentlyDeleteContent(item.id);
+    assert.throws(() => Model.addContent(payload({ title:'Missing movie watch language',watchHistory:[{ watchedAt:'2025-01-02T10:00:00.000Z',languageTag:'' }] })),/Watched in language is required/);
+    assert.throws(() => Model.addContent(payload({ type:'series',title:'Missing episode watch language',releaseStatus:'Airing',seriesStartDate:'2025-01-01',seasons:[{ seasonNumber:1,episodes:[{ episodeNumber:1,airDate:'2025-01-01',watchHistory:[{ watchedAt:'2025-01-02T10:00:00.000Z',languageTag:'' }] }] }] })),/Watched in language is required/);
+    assert.throws(() => database.prepare('INSERT INTO watch_history(id,content_id,watched_at,language_tag,created_at,updated_at) VALUES(?,?,?,?,?,?)').run('blank-language',item.id,'2025-01-02T10:00:00.000Z','','2025-01-02T10:00:00.000Z','2025-01-02T10:00:00.000Z'),/Watch language is required/);
 });
 
 test('series subtypes describe structure rather than lifecycle',() => {

@@ -2,12 +2,19 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { database, EXPORT_DIR, createBackup: createDatabaseBackup } = require('./database');
-const EXPORT_SCHEMA_VERSION=5;
-const { normalizeCountryCodes, normalizeContentRatings, normalizeWatchSources, normalizeSubtype,normalizePresentationForms,getCatalogs,EPISODE_TYPES } = require('./catalogs');
+const EXPORT_SCHEMA_VERSION=6;
+const { normalizeCountryCodes,normalizeLanguageTags, normalizeContentRatings, normalizeWatchSources, normalizeSubtype,normalizePresentationForms,getCatalogs,EPISODE_TYPES } = require('./catalogs');
 const { normalizeSingleLineText, normalizeCommaSeparatedText, normalizeMultilineText } = require('./text-normalization');
 const { fullCompanyName,companyKey } = require('./company-normalization');
+const { currentAccount }=require('./request-context');
 
-// Parses a stored JSON value and returns a safe fallback when it is malformed.
+// Returns a request-bound ownership predicate while allowing trusted maintenance scripts to operate globally.
+function ownerScope(alias='content_items') {
+    const userId=currentAccount()?.id;
+    return userId ? { sql:`${alias}.owner_user_id=?`,parameters:[userId],userId } : { sql:'1=1',parameters:[],userId:null };
+}
+
+// Parses structured audit payloads whose shape intentionally varies by event type.
 function parseJson(value, fallback = []) {
     try { return JSON.parse(value || JSON.stringify(fallback)); } catch { return fallback; }
 }
@@ -32,11 +39,25 @@ function getSeriesCredits(seriesId) {
         .map((row) => ({ id:row.id,name:row.person_name,role:row.role }));
 }
 
+// Loads normalized repeatable metadata for a set of content records using relational queries only.
+function getRelationalMetadata(contentIds=[]) {
+    const ids=[...new Set(contentIds.filter(Boolean))]; const result=new Map(ids.map((id) => [id,{ genres:[],presentationForms:[],language:[],awards:[],tags:[],countryOfOrigin:[],contentRatings:[],watchSources:[] }]));
+    if (!ids.length) return result;
+    const placeholders=ids.map(() => '?').join(',');
+    database.prepare(`SELECT cmt.content_id,mt.category,mt.name FROM content_metadata_terms cmt JOIN metadata_terms mt ON mt.id=cmt.term_id WHERE cmt.content_id IN (${placeholders}) ORDER BY cmt.content_id,cmt.display_order`).all(...ids).forEach((row) => {
+        const key={ genre:'genres',presentation:'presentationForms',award:'awards',tag:'tags' }[row.category]; if (key) result.get(row.content_id)[key].push(row.name);
+    });
+    database.prepare(`SELECT content_id,language_tag FROM content_languages WHERE content_id IN (${placeholders}) ORDER BY content_id,display_order`).all(...ids).forEach((row) => result.get(row.content_id).language.push(row.language_tag));
+    database.prepare(`SELECT content_id,country_code FROM content_countries WHERE content_id IN (${placeholders}) ORDER BY content_id,display_order`).all(...ids).forEach((row) => result.get(row.content_id).countryOfOrigin.push(row.country_code));
+    database.prepare(`SELECT content_id,territory,rating_system,code,previous_code,classification_basis,classification_confidence FROM content_official_ratings WHERE content_id IN (${placeholders}) ORDER BY content_id,display_order`).all(...ids).forEach((row) => result.get(row.content_id).contentRatings.push(Object.fromEntries(Object.entries({ territory:row.territory,system:row.rating_system,code:row.code,previousCode:row.previous_code,classificationBasis:row.classification_basis,classificationConfidence:row.classification_confidence }).filter(([,value]) => value !== ''))));
+    database.prepare(`SELECT content_id,method,provider FROM content_watch_sources WHERE content_id IN (${placeholders}) ORDER BY content_id,display_order`).all(...ids).forEach((row) => result.get(row.content_id).watchSources.push({ method:row.method,provider:row.provider }));
+    return result;
+}
+
 // Converts a database row into the API content representation.
 function mapContentRow(row,related = {}) {
     if (!row) return null;
-    const contentRatings = parseJson(row.content_ratings_json);
-    const watchSources = parseJson(row.watch_sources_json);
+    const metadata=related.metadata || getRelationalMetadata([row.id]).get(row.id);
     return {
         id: row.id, type: row.type, subtype: row.subtype, title: row.title, originalTitle: row.original_title,
         productionStatus:row.production_status || 'Announced',releaseStatus:row.release_status || 'Unscheduled', releaseDate: row.release_date || '', watchDate: row.latest_watch_date || '',
@@ -46,9 +67,9 @@ function mapContentRow(row,related = {}) {
         rating: row.personal_rating, productionCompany: row.production_company,
         productionCompanies:related.productionCompanies ?? getProductionCompanyNames(row.id),posterUrl: row.poster_url,
         trailerUrl: row.trailer_url, summary: row.summary,
-        favorite: Boolean(row.favorite), genres: parseJson(row.genres_json),presentationForms:parseJson(row.presentation_forms_json),language: parseJson(row.languages_json),
-        awards: parseJson(row.awards_json), tags: parseJson(row.tags_json), countryOfOrigin: parseJson(row.countries_json),
-        contentRatings, watchSources, watchHistory:related.watchHistory || getWatchHistory(row.id), contentLinks:related.contentLinks || getContentLinks(row.id),
+        favorite: Boolean(row.favorite), genres:metadata.genres,presentationForms:metadata.presentationForms,language:metadata.language,
+        awards:metadata.awards,tags:metadata.tags,countryOfOrigin:metadata.countryOfOrigin,
+        contentRatings:metadata.contentRatings,watchSources:metadata.watchSources,watchHistory:related.watchHistory || getWatchHistory(row.id), contentLinks:related.contentLinks || getContentLinks(row.id),
         creation: row.created_at, modification: row.updated_at, deletedAt:row.deleted_at || null,
         seriesCredits:related.seriesCredits ?? (row.type === 'series' ? getSeriesCredits(row.id) : []),
         viewingStatus:viewingStatus(row.type,related.watchHistory || getWatchHistory(row.id),related.seasons || (row.type === 'series' ? getSeriesStructure(row.id) : [])),
@@ -64,9 +85,10 @@ function hydrateContentRows(rows) {
     const links=new Map(rows.map((row) => [row.id,[]]));
     const companies=new Map(rows.map((row) => [row.id,[]]));
     const credits=new Map(rows.map((row) => [row.id,[]]));
+    const metadata=getRelationalMetadata(rows.map((row) => row.id));
     const seriesStructures=getSeriesStructures(rows.filter((row) => row.type === 'series').map((row) => row.id));
-    database.prepare(`SELECT id,content_id,watched_at FROM watch_history WHERE content_id IN (${placeholders}) ORDER BY watched_at DESC`).all(...rows.map((row) => row.id))
-        .forEach((row) => histories.get(row.content_id).push({ id:row.id,watchedAt:row.watched_at }));
+    database.prepare(`SELECT id,content_id,watched_at,language_tag FROM watch_history WHERE content_id IN (${placeholders}) ORDER BY watched_at DESC`).all(...rows.map((row) => row.id))
+        .forEach((row) => histories.get(row.content_id).push({ id:row.id,watchedAt:row.watched_at,languageTag:row.language_tag || '' }));
     database.prepare(`SELECT id,content_id,url,domain FROM content_links WHERE content_id IN (${placeholders}) ORDER BY domain,url`).all(...rows.map((row) => row.id))
         .forEach((row) => links.get(row.content_id).push({ id:row.id,url:row.url,domain:row.domain }));
     database.prepare(`SELECT cpc.content_id,pc.name FROM content_production_companies cpc JOIN production_companies pc ON pc.id=cpc.company_id
@@ -75,7 +97,7 @@ function hydrateContentRows(rows) {
     database.prepare(`SELECT series_id,id,person_name,role FROM series_credits WHERE series_id IN (${placeholders}) ORDER BY display_order,person_name COLLATE NOCASE`).all(...rows.map((row) => row.id))
         .forEach((row) => credits.get(row.series_id).push({ id:row.id,name:row.person_name,role:row.role }));
     return rows.map((row) => mapContentRow(row,{ watchHistory:histories.get(row.id),contentLinks:links.get(row.id),
-        productionCompanies:companies.get(row.id),seriesCredits:credits.get(row.id),seasons:row.type === 'series' ? seriesStructures.get(row.id) || [] : undefined }));
+        productionCompanies:companies.get(row.id),seriesCredits:credits.get(row.id),metadata:metadata.get(row.id),seasons:row.type === 'series' ? seriesStructures.get(row.id) || [] : undefined }));
 }
 
 // Normalizes a title for duplicate comparison.
@@ -192,8 +214,11 @@ function normalizePayload(payload, existing = {}) {
     const submittedSources = Array.isArray(payload.watchSources) ? payload.watchSources : (existing.watchSources || []);
     const watchSources = normalizeWatchSources(submittedSources);
     const watchHistory = (type === 'movie' && Array.isArray(payload.watchHistory) ? payload.watchHistory : (existing.watchHistory || [])).map((entry) => ({
-        id:entry.id || crypto.randomUUID(),watchedAt:String(entry.watchedAt || '').trim(),
+        id:entry.id || crypto.randomUUID(),watchedAt:String(entry.watchedAt || '').trim(),languageTag:normalizeLanguageTags([entry.languageTag])[0] || '',
     })).filter((entry) => entry.watchedAt && !Number.isNaN(Date.parse(entry.watchedAt)));
+    if (watchHistory.some((entry) => !entry.languageTag)) {
+        throw Object.assign(new Error('Watched in language is required for every movie watch record'),{ status:400 });
+    }
     if (watchHistory.some((entry) => /^\d{4}-\d{2}-\d{2}/.test(entry.watchedAt) && !isCalendarDate(entry.watchedAt.slice(0,10)))) {
         throw Object.assign(new Error('Watch dates must be real calendar dates'),{ status:400 });
     }
@@ -234,6 +259,9 @@ function normalizePayload(payload, existing = {}) {
             if (episode.airDate && episode.airDate > today) throw Object.assign(new Error('Episode release dates cannot be in the future'),{ status:400 });
             const earliestWatchDate = episode.airDate || releaseDate;
             const episodeHistory = Array.isArray(episode.watchHistory) ? episode.watchHistory : [];
+            if (episodeHistory.some((entry) => !normalizeLanguageTags([entry.languageTag]).length)) {
+                throw Object.assign(new Error('Watched in language is required for every episode watch record'),{ status:400 });
+            }
             if (episodeHistory.some((entry) => /^\d{4}-\d{2}-\d{2}/.test(String(entry.watchedAt || '')) && !isCalendarDate(String(entry.watchedAt).slice(0,10)))) {
                 throw Object.assign(new Error('Episode watch dates must be real calendar dates'),{ status:400 });
             }
@@ -276,7 +304,7 @@ function normalizePayload(payload, existing = {}) {
         })).filter((credit) => credit.name && credit.role) : [], casts, rating:watched ? cleanText(payload.rating) : cleanText(existing.rating),
         productionCompanies,productionCompanyAliases:normalizedCompanies.aliases,productionCompany:productionCompanies.join(', '), posterUrl:trailerAvailable ? cleanText(payload.posterUrl) : cleanText(existing.posterUrl),
         trailerUrl:trailerAvailable ? cleanText(payload.trailerUrl) : cleanText(existing.trailerUrl), summary:normalizeMultilineText(payload.summary), favorite:Boolean(payload.favorite),
-        genres,presentationForms,language:cleanList(payload.language),
+        genres,presentationForms,language:normalizeLanguageTags(payload.language),
         awards:watched ? cleanList(payload.awards) : cleanList(existing.awards), tags:watched ? cleanList(payload.tags) : cleanList(existing.tags),
         countryOfOrigin: normalizeCountryCodes(Array.isArray(payload.countryOfOrigin) ? payload.countryOfOrigin : []), contentRatings,
         watchSources:watched ? watchSources : (existing.watchSources || []),watchHistory,
@@ -289,17 +317,16 @@ function normalizePayload(payload, existing = {}) {
 function persistenceValues(item) {
     return [item.id,item.type,item.subtype,item.title,item.originalTitle,item.productionStatus,item.releaseStatus,item.releaseDate,item.seriesStartDate,item.seriesEndDate,item.seriesContinuing ? 1 : 0,item.seriesNetwork,item.duration,
         item.director,item.casts,item.rating,item.productionCompany,item.posterUrl,item.trailerUrl,item.summary,
-        item.favorite ? 1 : 0,JSON.stringify(item.genres),JSON.stringify(item.presentationForms),JSON.stringify(item.language),JSON.stringify(item.awards),
-        JSON.stringify(item.tags),JSON.stringify(item.countryOfOrigin),JSON.stringify(item.contentRatings),
-        JSON.stringify(item.watchSources),item.creation,item.modification];
+        item.favorite ? 1 : 0,item.creation,item.modification];
 }
 
 // Returns paginated content and the total result count.
 function getContent(query = {}) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = query.all === true ? 1000000 : Math.min(100, Math.max(1, Number(query.limit) || 20));
-    const clauses = [query.trashed === 'true' || query.trashed === true ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL'];
-    const parameters = [];
+    const ownership=ownerScope();
+    const clauses = [ownership.sql,query.trashed === 'true' || query.trashed === true ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL'];
+    const parameters = [...ownership.parameters];
     if (query.type && ['movie', 'series'].includes(query.type)) { clauses.push('type = ?'); parameters.push(query.type); }
     if (query.subtype) { clauses.push('subtype = ?'); parameters.push(query.subtype); }
     if (query.favorite === 'true' || query.favorite === true) clauses.push('favorite = 1');
@@ -317,14 +344,15 @@ function getContent(query = {}) {
     if (query.rating === '__unrated__') clauses.push("trim(personal_rating) = ''");
     else if (query.rating) { clauses.push('personal_rating = ?'); parameters.push(query.rating); }
     if (query.releaseYear) { clauses.push("substr(release_date, 1, 4) = ?"); parameters.push(String(query.releaseYear)); }
-    const jsonFilters = [['genres','genres_json'],['presentationForms','presentation_forms_json'],['languages','languages_json'],['tags','tags_json'],['awards','awards_json'],['countries','countries_json']];
-    jsonFilters.forEach(([queryName, column]) => {
-        const values = String(query[queryName] || '').split(',').filter(Boolean);
-        if (values.length) {
-            clauses.push(`(${values.map(() => `EXISTS (SELECT 1 FROM json_each(content_items.${column}) WHERE lower(CAST(value AS TEXT)) = lower(?))`).join(' AND ')})`);
-            parameters.push(...values);
-        }
+    const relationalFilters = [['genres','genre'],['presentationForms','presentation'],['tags','tag'],['awards','award']];
+    relationalFilters.forEach(([queryName,category]) => {
+        const submittedValues = String(query[queryName] || '').split(',').filter(Boolean);
+        if (submittedValues.length) { clauses.push(`(${submittedValues.map(() => `EXISTS (SELECT 1 FROM content_metadata_terms cmt JOIN metadata_terms mt ON mt.id=cmt.term_id WHERE cmt.content_id=content_items.id AND mt.category='${category}' AND mt.name=? COLLATE NOCASE)`).join(' AND ')})`); parameters.push(...submittedValues); }
     });
+    const languages=normalizeLanguageTags(String(query.languages || '').split(',').filter(Boolean));
+    if (languages.length) { clauses.push(`(${languages.map(() => 'EXISTS (SELECT 1 FROM content_languages cl WHERE cl.content_id=content_items.id AND cl.language_tag=? COLLATE NOCASE)').join(' AND ')})`); parameters.push(...languages); }
+    const countries=String(query.countries || '').split(',').filter(Boolean);
+    if (countries.length) { clauses.push(`(${countries.map(() => 'EXISTS (SELECT 1 FROM content_countries cc WHERE cc.content_id=content_items.id AND cc.country_code=? COLLATE NOCASE)').join(' AND ')})`); parameters.push(...countries); }
     const productionCompanies = String(query.productionCompanies || '').split(',').map((value) => value.trim()).filter(Boolean);
     productionCompanies.forEach((company) => {
         clauses.push(`EXISTS (SELECT 1 FROM content_production_companies cpc JOIN production_companies pc ON pc.id=cpc.company_id
@@ -333,7 +361,7 @@ function getContent(query = {}) {
     });
     const watchSources = String(query.watchSources || '').split(',').filter(Boolean);
     watchSources.forEach((source) => {
-        clauses.push("EXISTS (SELECT 1 FROM json_each(content_items.watch_sources_json) WHERE lower(json_extract(value, '$.method')) = lower(?))");
+        clauses.push('EXISTS (SELECT 1 FROM content_watch_sources cws WHERE cws.content_id=content_items.id AND cws.method=? COLLATE NOCASE)');
         parameters.push(source);
     });
     const linkDomains = String(query.linkDomains || '').split(',').filter(Boolean);
@@ -385,8 +413,9 @@ function getContent(query = {}) {
 
 // Returns filter choices derived from values currently stored in active library entries.
 function getFilterCatalogs() {
+    const ownership=ownerScope('c');
     const linkDomains = new Set(database.prepare(`SELECT DISTINCT domain FROM content_links l JOIN content_items c ON c.id=l.content_id
-        WHERE c.deleted_at IS NULL AND trim(domain) <> ''`).all().map((row) => normalizeLinkDomain(row.domain)).filter(Boolean));
+        WHERE ${ownership.sql} AND c.deleted_at IS NULL AND trim(domain) <> ''`).all(...ownership.parameters).map((row) => normalizeLinkDomain(row.domain)).filter(Boolean));
     return {
         linkDomains:[...linkDomains].sort((a,b) => a.localeCompare(b,undefined,{ sensitivity:'base' })),
     };
@@ -395,10 +424,11 @@ function getFilterCatalogs() {
 // Searches normalized production companies for lightweight autocomplete selectors.
 function searchProductionCompanies(query='') {
     const pattern=`%${String(query).trim()}%`;
+    const ownership=ownerScope('c');
     return database.prepare(`SELECT pc.id,pc.name,COUNT(DISTINCT cpc.content_id) uses FROM production_companies pc
-        LEFT JOIN content_production_companies cpc ON cpc.company_id=pc.id
-        WHERE pc.name LIKE ? OR EXISTS(SELECT 1 FROM production_company_aliases a WHERE a.company_id=pc.id AND a.alias LIKE ?)
-        GROUP BY pc.id ORDER BY uses DESC,pc.name COLLATE NOCASE LIMIT 50`).all(pattern,pattern);
+        JOIN content_production_companies cpc ON cpc.company_id=pc.id JOIN content_items c ON c.id=cpc.content_id
+        WHERE ${ownership.sql} AND c.deleted_at IS NULL AND (pc.name LIKE ? OR EXISTS(SELECT 1 FROM production_company_aliases a WHERE a.company_id=pc.id AND a.alias LIKE ?))
+        GROUP BY pc.id ORDER BY uses DESC,pc.name COLLATE NOCASE LIMIT 50`).all(...ownership.parameters,pattern,pattern);
 }
 
 // Replaces normalized production-company links for one content item.
@@ -429,27 +459,30 @@ function getProductionCompanyNames(contentId) {
 
 // Returns every active content item for exports and compatibility endpoints.
 function getMovies() {
-    return hydrateContentRows(database.prepare('SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE deleted_at IS NULL ORDER BY updated_at DESC').all());
+    const ownership=ownerScope();
+    return hydrateContentRows(database.prepare(`SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE ${ownership.sql} AND deleted_at IS NULL ORDER BY updated_at DESC`).all(...ownership.parameters));
 }
 
 // Returns one content item by its stable identifier.
 function getById(id) {
-    const item = mapContentRow(database.prepare('SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE id = ? AND deleted_at IS NULL').get(id));
+    const ownership=ownerScope();
+    const item = mapContentRow(database.prepare(`SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE id = ? AND ${ownership.sql} AND deleted_at IS NULL`).get(id,...ownership.parameters));
     if (item?.type === 'series') item.seasons = getSeriesStructure(id);
     return item;
 }
 
 // Returns one content item regardless of its active or trashed state.
 function getAnyById(id) {
-    const item=mapContentRow(database.prepare('SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE id=?').get(id));
+    const ownership=ownerScope();
+    const item=mapContentRow(database.prepare(`SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE id=? AND ${ownership.sql}`).get(id,...ownership.parameters));
     if (item?.type === 'series') item.seasons=getSeriesStructure(id);
     return item;
 }
 
 // Returns every recorded viewing date for one title in reverse chronological order.
 function getWatchHistory(contentId) {
-    return database.prepare('SELECT id,watched_at FROM watch_history WHERE content_id=? ORDER BY watched_at DESC').all(contentId)
-        .map((row) => ({ id:row.id,watchedAt:row.watched_at }));
+    return database.prepare('SELECT id,watched_at,language_tag FROM watch_history WHERE content_id=? ORDER BY watched_at DESC').all(contentId)
+        .map((row) => ({ id:row.id,watchedAt:row.watched_at,languageTag:row.language_tag || '' }));
 }
 
 // Returns every validated external location for one title.
@@ -460,19 +493,20 @@ function getContentLinks(contentId) {
 // Synchronizes watch dates and external links while preserving row identities and creation times.
 function replaceWatchData(contentId, watchHistory = [], contentLinks = []) {
     const now = new Date().toISOString();
-    const existingWatches=new Map(database.prepare('SELECT id,watched_at FROM watch_history WHERE content_id=?').all(contentId).map((row) => [row.id,row]));
+    const existingWatches=new Map(database.prepare('SELECT id,watched_at,language_tag FROM watch_history WHERE content_id=?').all(contentId).map((row) => [row.id,row]));
     const retainedWatchIds=[];
-    const updateWatch=database.prepare('UPDATE watch_history SET watched_at=?,updated_at=? WHERE id=? AND content_id=?');
-    const insertWatch = database.prepare('INSERT INTO watch_history(id,content_id,watched_at,created_at,updated_at) VALUES(?,?,?,?,?)');
+    const updateWatch=database.prepare('UPDATE watch_history SET watched_at=?,language_tag=?,updated_at=? WHERE id=? AND content_id=?');
+    const insertWatch = database.prepare('INSERT INTO watch_history(id,content_id,watched_at,language_tag,created_at,updated_at) VALUES(?,?,?,?,?,?)');
     watchHistory.forEach((entry) => {
         let id=entry.id;
         if (existingWatches.has(id)) {
             retainedWatchIds.push(id);
-            if (existingWatches.get(id).watched_at !== entry.watchedAt) updateWatch.run(entry.watchedAt,now,id,contentId);
+            const existing=existingWatches.get(id); const languageTag=normalizeLanguageTags([entry.languageTag])[0] || '';
+            if (existing.watched_at !== entry.watchedAt || existing.language_tag !== languageTag) updateWatch.run(entry.watchedAt,languageTag,now,id,contentId);
             return;
         }
         if (!id || database.prepare('SELECT 1 FROM watch_history WHERE id=?').get(id)) id=crypto.randomUUID();
-        retainedWatchIds.push(id); insertWatch.run(id,contentId,entry.watchedAt,now,now);
+        retainedWatchIds.push(id); insertWatch.run(id,contentId,entry.watchedAt,normalizeLanguageTags([entry.languageTag])[0] || '',now,now);
     });
     if (retainedWatchIds.length) database.prepare(`DELETE FROM watch_history WHERE content_id=? AND id NOT IN (${retainedWatchIds.map(() => '?').join(',')})`).run(contentId,...retainedWatchIds);
     else database.prepare('DELETE FROM watch_history WHERE content_id=?').run(contentId);
@@ -509,8 +543,8 @@ function getSeriesStructures(seriesIds=[]) {
     const histories=new Map(episodes.map((episode) => [episode.id,[]]));
     if (episodes.length) {
         const episodePlaceholders=episodes.map(() => '?').join(',');
-        database.prepare(`SELECT id,episode_id,watched_at FROM episode_watch_history WHERE episode_id IN (${episodePlaceholders}) ORDER BY watched_at DESC`).all(...episodes.map((episode) => episode.id))
-            .forEach((row) => histories.get(row.episode_id).push({ id:row.id,watchedAt:row.watched_at }));
+        database.prepare(`SELECT id,episode_id,watched_at,language_tag FROM episode_watch_history WHERE episode_id IN (${episodePlaceholders}) ORDER BY watched_at DESC`).all(...episodes.map((episode) => episode.id))
+            .forEach((row) => histories.get(row.episode_id).push({ id:row.id,watchedAt:row.watched_at,languageTag:row.language_tag || '' }));
     }
     const episodesBySeason=new Map(seasonIds.map((id) => [id,[]]));
     episodes.forEach((episode) => {
@@ -556,7 +590,7 @@ function replaceSeriesStructure(seriesId, seasons = []) {
             const submittedEpisodeHistory = Array.isArray(episode.watchHistory) ? episode.watchHistory
                 : (episode.watched ? [{ watchedAt:episode.watchDate || now }] : []);
             const episodeHistory = submittedEpisodeHistory.map((entry) => ({
-                id:entry.id || crypto.randomUUID(),watchedAt:String(entry.watchedAt || '').trim(),
+                id:entry.id || crypto.randomUUID(),watchedAt:String(entry.watchedAt || '').trim(),languageTag:normalizeLanguageTags([entry.languageTag])[0] || '',
             })).filter((entry) => entry.watchedAt && !Number.isNaN(Date.parse(entry.watchedAt)));
             const episodeType=EPISODE_TYPES.includes(episode.episodeType) ? episode.episodeType : 'Regular';
             database.prepare(`INSERT INTO episodes(id,season_id,episode_number,title,air_date,runtime_minutes,watched,watch_date,
@@ -566,8 +600,8 @@ function replaceSeriesStructure(seriesId, seasons = []) {
                 episode.duration === '' || episode.duration == null ? null : Number(episode.duration),episodeHistory.length ? 1 : 0,
                 episodeHistory[0]?.watchedAt || null,Number(episode.progressSeconds) || 0,normalizeMultilineText(episode.summary),episodeType,
                 normalizeCommaSeparatedText(episode.director),now,now);
-            const insertWatch = database.prepare('INSERT INTO episode_watch_history(id,episode_id,watched_at,created_at,updated_at) VALUES(?,?,?,?,?)');
-            episodeHistory.forEach((entry) => insertWatch.run(entry.id,episodeId,entry.watchedAt,now,now));
+            const insertWatch = database.prepare('INSERT INTO episode_watch_history(id,episode_id,watched_at,language_tag,created_at,updated_at) VALUES(?,?,?,?,?,?)');
+            episodeHistory.forEach((entry) => insertWatch.run(entry.id,episodeId,entry.watchedAt,entry.languageTag,now,now));
         });
     });
 }
@@ -578,6 +612,27 @@ function replaceSeriesCredits(seriesId,credits=[]) {
     const now=new Date().toISOString();
     const insert=database.prepare('INSERT INTO series_credits(id,series_id,person_name,role,display_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?)');
     credits.forEach((credit,index) => insert.run(credit.id || crypto.randomUUID(),seriesId,credit.name,credit.role,index,now,now));
+}
+
+// Synchronizes normalized metadata relations used for exact querying and future schema evolution.
+function replaceRelationalMetadata(contentId,item) {
+    database.prepare('DELETE FROM content_metadata_terms WHERE content_id=?').run(contentId);
+    database.prepare('DELETE FROM content_languages WHERE content_id=?').run(contentId);
+    database.prepare('DELETE FROM content_countries WHERE content_id=?').run(contentId);
+    database.prepare('DELETE FROM content_official_ratings WHERE content_id=?').run(contentId);
+    database.prepare('DELETE FROM content_watch_sources WHERE content_id=?').run(contentId);
+    const now=new Date().toISOString();
+    const term=database.prepare('INSERT INTO metadata_terms(category,name,created_at) VALUES(?,?,?) ON CONFLICT(category,name) DO UPDATE SET name=excluded.name RETURNING id');
+    const termLink=database.prepare('INSERT INTO content_metadata_terms(content_id,term_id,display_order) VALUES(?,?,?)');
+    [['genre',item.genres],['presentation',item.presentationForms],['award',item.awards],['tag',item.tags]].forEach(([category,values]) => (values || []).forEach((name,index) => termLink.run(contentId,term.get(category,name,now).id,index)));
+    const language=database.prepare('INSERT INTO content_languages(content_id,language_tag,display_order) VALUES(?,?,?)');
+    (item.language || []).forEach((value,index) => language.run(contentId,value,index));
+    const country=database.prepare('INSERT INTO content_countries(content_id,country_code,display_order) VALUES(?,?,?)');
+    (item.countryOfOrigin || []).forEach((value,index) => country.run(contentId,value,index));
+    const rating=database.prepare('INSERT INTO content_official_ratings(content_id,territory,code,rating_system,previous_code,classification_basis,classification_confidence,display_order) VALUES(?,?,?,?,?,?,?,?)');
+    (item.contentRatings || []).forEach((value,index) => rating.run(contentId,value.territory,value.code,value.system || '',value.previousCode || '',value.classificationBasis || '',value.classificationConfidence || '',index));
+    const source=database.prepare('INSERT INTO content_watch_sources(id,content_id,method,provider,display_order) VALUES(?,?,?,?,?)');
+    (item.watchSources || []).forEach((value,index) => source.run(crypto.randomUUID(),contentId,value.method,value.provider || '',index));
 }
 
 // Writes one immutable structured audit entry.
@@ -627,17 +682,20 @@ function runTransaction(operation) {
 function addContent(payload, context = {}) {
     const item = normalizePayload(payload);
     if (!item.title) throw Object.assign(new Error('Title is required'), { status: 400 });
-    const duplicate = database.prepare("SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND deleted_at IS NULL")
-        .get(normalizeTitle(item.title),item.releaseDate || '',item.type);
+    const ownership=ownerScope();
+    const duplicate = database.prepare(`SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND ${ownership.sql} AND deleted_at IS NULL`)
+        .get(normalizeTitle(item.title),item.releaseDate || '',item.type,...ownership.parameters);
     if (duplicate) throw Object.assign(new Error('A title with this release date already exists'), { status: 409 });
     runTransaction(() => {
         database.prepare(`INSERT INTO content_items (id,type,subtype,title,original_title,production_status,release_status,release_date,series_start_date,series_end_date,series_continuing,series_network,runtime_minutes,
-            director,casts,personal_rating,production_company,poster_url,trailer_url,summary,favorite,genres_json,presentation_forms_json,
-            languages_json,awards_json,tags_json,countries_json,content_ratings_json,watch_sources_json,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...persistenceValues(item));
+            director,casts,personal_rating,production_company,poster_url,trailer_url,summary,favorite,created_at,updated_at,owner_user_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...persistenceValues(item),ownership.userId);
+        if (ownership.userId) database.prepare(`INSERT INTO library_entries(id,user_id,content_id,personal_rating,favorite,created_at,updated_at,deleted_at)
+            VALUES(?,?,?,?,?,?,?,NULL)`).run(crypto.randomUUID(),ownership.userId,item.id,item.rating || null,item.favorite ? 1 : 0,item.creation,item.modification);
         if (item.type === 'series') { replaceSeriesStructure(item.id, item.seasons); replaceSeriesCredits(item.id,item.seriesCredits); }
         replaceWatchData(item.id,item.watchHistory,item.contentLinks);
         replaceProductionCompanies(item.id,item.productionCompanies,item.productionCompanyAliases);
+        replaceRelationalMetadata(item.id,item);
         writeAudit('create', 'content', item.id, { title:item.title,type:item.type }, { ...context, after:item });
     });
     return getById(item.id);
@@ -656,18 +714,21 @@ function updateContent(payload, context = {}) {
     if (!existing) throw Object.assign(new Error('Content item not found'), { status: 404 });
     const item = normalizePayload(payload, existing);
     if (!item.title) throw Object.assign(new Error('Title is required'), { status: 400 });
-    const duplicate=database.prepare("SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND id<>? AND deleted_at IS NULL")
-        .get(normalizeTitle(item.title),item.releaseDate || '',item.type,item.id);
+    const ownership=ownerScope();
+    const duplicate=database.prepare(`SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND id<>? AND ${ownership.sql} AND deleted_at IS NULL`)
+        .get(normalizeTitle(item.title),item.releaseDate || '',item.type,item.id,...ownership.parameters);
     if (duplicate) throw Object.assign(new Error('Another title with this release date already exists'),{ status:409 });
     const values = persistenceValues(item);
     runTransaction(() => {
         database.prepare(`UPDATE content_items SET type=?,subtype=?,title=?,original_title=?,production_status=?,release_status=?,release_date=?,series_start_date=?,series_end_date=?,series_continuing=?,series_network=?,runtime_minutes=?,
-            director=?,casts=?,personal_rating=?,production_company=?,poster_url=?,trailer_url=?,summary=?,favorite=?,genres_json=?,presentation_forms_json=?,
-            languages_json=?,awards_json=?,tags_json=?,countries_json=?,content_ratings_json=?,watch_sources_json=?,updated_at=? WHERE id=?`)
-            .run(...values.slice(1,29),item.modification,item.id);
+            director=?,casts=?,personal_rating=?,production_company=?,poster_url=?,trailer_url=?,summary=?,favorite=?,updated_at=? WHERE id=?`)
+            .run(...values.slice(1,21),item.modification,item.id);
         if (item.type === 'series') { replaceSeriesStructure(item.id, item.seasons); replaceSeriesCredits(item.id,item.seriesCredits); }
         replaceWatchData(item.id,item.watchHistory,item.contentLinks);
         replaceProductionCompanies(item.id,item.productionCompanies,item.productionCompanyAliases);
+        replaceRelationalMetadata(item.id,item);
+        if (ownership.userId) database.prepare('UPDATE library_entries SET personal_rating=?,favorite=?,updated_at=?,deleted_at=NULL WHERE user_id=? AND content_id=?')
+            .run(item.rating || null,item.favorite ? 1 : 0,item.modification,ownership.userId,item.id);
         resolveAssetNotifications(item.id, item.posterUrl, item.trailerUrl);
         const changes = changedContent(existing, item);
         writeAudit('update', 'content', item.id, { title:item.title,changedFields:changes.fields }, { ...context,before:changes.before,after:changes.after });
@@ -684,7 +745,8 @@ function bulkUpdateContent(payload,context={}) {
     if (!['productionStatus','releaseStatus'].includes(field)) throw Object.assign(new Error('Only production or release status can be updated in bulk'),{ status:400 });
     if (field === 'productionStatus' && !PRODUCTION_STATUSES.includes(value)) throw Object.assign(new Error('Choose a valid production status'),{ status:400 });
     const placeholders=ids.map(() => '?').join(',');
-    const rows=database.prepare(`SELECT id,type FROM content_items WHERE id IN (${placeholders}) AND deleted_at IS NULL`).all(...ids);
+    const ownership=ownerScope();
+    const rows=database.prepare(`SELECT id,type FROM content_items WHERE id IN (${placeholders}) AND ${ownership.sql} AND deleted_at IS NULL`).all(...ids,...ownership.parameters);
     if (rows.length !== ids.length) throw Object.assign(new Error('One or more selected titles are no longer active'),{ status:409 });
     if (field === 'releaseStatus' && rows.some((row) => !(row.type === 'series' ? SERIES_RELEASE_STATUSES : MOVIE_RELEASE_STATUSES).includes(value))) {
         throw Object.assign(new Error('The selected release status is not valid for every selected content type'),{ status:400 });
@@ -703,6 +765,8 @@ function deleteContent(id, context = {}) {
     if (!item) throw Object.assign(new Error('Content item not found'), { status: 404 });
     const now = new Date().toISOString();
     database.prepare('UPDATE content_items SET deleted_at=?,updated_at=? WHERE id=?').run(now, now, id);
+    const ownership=ownerScope();
+    if (ownership.userId) database.prepare('UPDATE library_entries SET deleted_at=?,updated_at=? WHERE user_id=? AND content_id=?').run(now,now,ownership.userId,id);
     writeAudit('trash', 'content', id, { title:item.title }, { ...context,before:{ deleted:false },after:{ deleted:true,deletedAt:now } });
     return item;
 }
@@ -711,8 +775,9 @@ function deleteContent(id, context = {}) {
 function restoreContent(id, resolution = '', context = {}) {
     const item = getAnyById(id);
     if (!item || !item.deletedAt) throw Object.assign(new Error('Trashed content item not found'), { status:404 });
-    const conflictRow=database.prepare("SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND id<>? AND deleted_at IS NULL")
-        .get(normalizeTitle(item.title),item.releaseDate || '',item.type,id);
+    const ownership=ownerScope();
+    const conflictRow=database.prepare(`SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND id<>? AND ${ownership.sql} AND deleted_at IS NULL`)
+        .get(normalizeTitle(item.title),item.releaseDate || '',item.type,id,...ownership.parameters);
     if (conflictRow && !['replace','merge'].includes(resolution)) {
         const conflict=getById(conflictRow.id);
         throw Object.assign(new Error('An active entry already has the same type, title, and release date'),{
@@ -745,6 +810,10 @@ function restoreContent(id, resolution = '', context = {}) {
     runTransaction(() => {
         if (conflictRow) database.prepare('UPDATE content_items SET deleted_at=?,updated_at=? WHERE id=?').run(now,now,conflictRow.id);
         database.prepare('UPDATE content_items SET deleted_at=NULL,updated_at=? WHERE id=?').run(now,id);
+        if (ownership.userId) {
+            if (conflictRow) database.prepare('UPDATE library_entries SET deleted_at=?,updated_at=? WHERE user_id=? AND content_id=?').run(now,now,ownership.userId,conflictRow.id);
+            database.prepare('UPDATE library_entries SET deleted_at=NULL,updated_at=? WHERE user_id=? AND content_id=?').run(now,ownership.userId,id);
+        }
         writeAudit(conflictRow ? 'restore-replace' : 'restore','content',id,{ title:item.title,replacedId:conflictRow?.id || null },{
             ...context,before:{ deleted:true,deletedAt:item.deletedAt },after:{ deleted:false },
         });
@@ -771,14 +840,17 @@ function toggleFavorite(id, context = {}) {
     const item = getById(id);
     if (!item) throw Object.assign(new Error('Content item not found'), { status: 404 });
     database.prepare('UPDATE content_items SET favorite=?,updated_at=? WHERE id=?').run(item.favorite ? 0 : 1, new Date().toISOString(), id);
+    const ownership=ownerScope();
+    if (ownership.userId) database.prepare('UPDATE library_entries SET favorite=?,updated_at=? WHERE user_id=? AND content_id=?').run(item.favorite ? 0 : 1,new Date().toISOString(),ownership.userId,id);
     writeAudit('favorite', 'content', id, { title:item.title }, { ...context,before:{ favorite:item.favorite },after:{ favorite:!item.favorite } });
     return getById(id);
 }
 
 // Returns active notifications with their associated content titles.
 function getNotifications() {
+    const ownership=ownerScope('c');
     return database.prepare(`SELECT n.*,c.title FROM notifications n JOIN content_items c ON c.id=n.content_id
-        WHERE n.resolved_at IS NULL ORDER BY n.detected_at DESC`).all().map((row) => ({
+        WHERE ${ownership.sql} AND n.resolved_at IS NULL ORDER BY n.detected_at DESC`).all(...ownership.parameters).map((row) => ({
         id:row.id,contentId:row.content_id,title:row.title,assetType:row.asset_type,status:row.status,reason:row.reason,
         assetUrl:row.asset_url,detectedAt:row.detected_at,read:Boolean(row.read_at),
     }));
@@ -786,7 +858,9 @@ function getNotifications() {
 
 // Marks one notification as read.
 function markNotificationRead(id, context = {}) {
-    const notification = database.prepare('SELECT content_id,asset_type,read_at FROM notifications WHERE id=?').get(id);
+    const ownership=ownerScope('c');
+    const notification = database.prepare(`SELECT n.content_id,n.asset_type,n.read_at FROM notifications n JOIN content_items c ON c.id=n.content_id WHERE n.id=? AND ${ownership.sql}`).get(id,...ownership.parameters);
+    if (!notification) throw Object.assign(new Error('Notification not found'),{ status:404 });
     const readAt = new Date().toISOString();
     database.prepare('UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE id=?').run(readAt, id);
     if (notification && !notification.read_at) writeAudit('read', 'notification', id, { contentId:notification.content_id,assetType:notification.asset_type }, { ...context,after:{ readAt } });
@@ -794,7 +868,7 @@ function markNotificationRead(id, context = {}) {
 
 // Removes persistence identifiers and timestamps while retaining all transferable library fields.
 function cleanExportItem(item) {
-    const cleanHistory=(history=[]) => history.map((entry) => ({ watchedAt:entry.watchedAt }));
+    const cleanHistory=(history=[]) => history.map((entry) => ({ watchedAt:entry.watchedAt,languageTag:entry.languageTag || '' }));
     const cleanEpisodes=(episodes=[]) => episodes.map((episode) => ({
         episodeNumber:episode.episodeNumber,title:episode.title,episodeType:episode.episodeType,director:episode.director,
         airDate:episode.airDate,duration:episode.duration,progressSeconds:episode.progressSeconds,summary:episode.summary,
@@ -847,18 +921,22 @@ function buildExportPayload(options={}) {
 
 // Builds aggregate library statistics without sending the full collection to the browser.
 function getStatistics() {
+    const ownership=ownerScope();
+    const joinedOwnership=ownerScope('c');
     const rows = database.prepare(`SELECT content_items.*,
         (SELECT COUNT(*) FROM watch_history WHERE content_id=content_items.id) watch_count
-        FROM content_items WHERE deleted_at IS NULL`).all();
+        FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql}`).all(...ownership.parameters);
+    const relationalMetadata=getRelationalMetadata(rows.map((row) => row.id));
     const count = (target,key,amount = 1) => { if (key) target[key] = (target[key] || 0) + amount; };
     const types = {},genres = {},presentationForms = {},countries = {},productionStatuses = {},releaseStatuses = {},viewingStatuses = {},personalRatings = {},releaseDecades = {};
     let watchedTitles = 0,totalWatchSessions = 0,totalMinutesWatched = 0,rewatchedTitles = 0,ratedTitles = 0;
     rows.forEach((row) => {
         count(types,row.type); count(productionStatuses,row.production_status); count(releaseStatuses,row.release_status);
         if (row.type === 'movie') count(viewingStatuses,row.watch_count ? 'Watched' : 'Not Watched');
-        parseJson(row.genres_json).forEach((value) => count(genres,value));
-        parseJson(row.presentation_forms_json).forEach((value) => count(presentationForms,value));
-        parseJson(row.countries_json).forEach((value) => count(countries,value));
+        const metadata=relationalMetadata.get(row.id);
+        metadata.genres.forEach((value) => count(genres,value));
+        metadata.presentationForms.forEach((value) => count(presentationForms,value));
+        metadata.countryOfOrigin.forEach((value) => count(countries,value));
         if (row.release_date) count(releaseDecades,`${Math.floor(Number(row.release_date.slice(0,4)) / 10) * 10}s`);
         if (row.personal_rating) {
             count(personalRatings,row.personal_rating);
@@ -879,7 +957,7 @@ function getStatistics() {
         COALESCE(SUM(CASE WHEN eh.id IS NOT NULL THEN e.runtime_minutes ELSE 0 END),0) minutes
         FROM content_items c LEFT JOIN seasons s ON s.series_id=c.id LEFT JOIN episodes e ON e.season_id=s.id
         LEFT JOIN episode_watch_history eh ON eh.episode_id=e.id
-        WHERE c.deleted_at IS NULL AND c.type='series' GROUP BY c.id`).all();
+        WHERE c.deleted_at IS NULL AND c.type='series' AND ${joinedOwnership.sql} GROUP BY c.id`).all(...joinedOwnership.parameters);
     let episodesWatched = 0,episodeWatchSessions = 0,seriesWatchCycles = 0,rewatchedEpisodes = 0,completedSeries = 0,partiallyWatchedSeries = 0;
     seriesViewing.forEach((series) => {
         const preciseSessions = series.episode_sessions;
@@ -896,29 +974,29 @@ function getStatistics() {
     });
     rewatchedEpisodes = database.prepare(`SELECT COUNT(*) count FROM (SELECT eh.episode_id FROM episode_watch_history eh
         JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id JOIN content_items c ON c.id=s.series_id
-        WHERE c.deleted_at IS NULL GROUP BY eh.episode_id HAVING COUNT(*)>1)`).get().count;
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} GROUP BY eh.episode_id HAVING COUNT(*)>1)`).get(...joinedOwnership.parameters).count;
     const completedSeasons = database.prepare(`SELECT COUNT(*) count FROM (SELECT s.id,COUNT(DISTINCT e.id) episode_total,
         COUNT(DISTINCT CASE WHEN eh.id IS NOT NULL THEN e.id END) watched_total FROM seasons s
         JOIN content_items c ON c.id=s.series_id LEFT JOIN episodes e ON e.season_id=s.id
-        LEFT JOIN episode_watch_history eh ON eh.episode_id=e.id WHERE c.deleted_at IS NULL
+        LEFT JOIN episode_watch_history eh ON eh.episode_id=e.id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}
         GROUP BY s.id HAVING COUNT(DISTINCT e.id)>0
-            AND COUNT(DISTINCT CASE WHEN eh.id IS NOT NULL THEN e.id END)=COUNT(DISTINCT e.id))`).get().count;
+            AND COUNT(DISTINCT CASE WHEN eh.id IS NOT NULL THEN e.id END)=COUNT(DISTINCT e.id))`).get(...joinedOwnership.parameters).count;
     const watchActivity = {};
     database.prepare(`SELECT month,COUNT(*) count FROM (
-        SELECT strftime('%Y-%m',h.watched_at,'localtime') month FROM watch_history h JOIN content_items c ON c.id=h.content_id WHERE c.deleted_at IS NULL AND c.type='movie'
-        UNION ALL SELECT strftime('%Y-%m',eh.watched_at,'localtime') FROM episode_watch_history eh JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id JOIN content_items c ON c.id=s.series_id WHERE c.deleted_at IS NULL
-        ) GROUP BY month ORDER BY month`).all()
+        SELECT strftime('%Y-%m',h.watched_at,'localtime') month FROM watch_history h JOIN content_items c ON c.id=h.content_id WHERE c.deleted_at IS NULL AND c.type='movie' AND ${joinedOwnership.sql}
+        UNION ALL SELECT strftime('%Y-%m',eh.watched_at,'localtime') FROM episode_watch_history eh JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id JOIN content_items c ON c.id=s.series_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}
+        ) GROUP BY month ORDER BY month`).all(...joinedOwnership.parameters,...joinedOwnership.parameters)
         .forEach((row) => { watchActivity[row.month] = row.count; });
     const weekdayActivity = { Monday:0,Tuesday:0,Wednesday:0,Thursday:0,Friday:0,Saturday:0,Sunday:0 };
     const weekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
     database.prepare(`SELECT weekday,COUNT(*) count FROM (
-        SELECT strftime('%w',h.watched_at,'localtime') weekday FROM watch_history h JOIN content_items c ON c.id=h.content_id WHERE c.deleted_at IS NULL AND c.type='movie'
-        UNION ALL SELECT strftime('%w',eh.watched_at,'localtime') FROM episode_watch_history eh JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id JOIN content_items c ON c.id=s.series_id WHERE c.deleted_at IS NULL
-        ) GROUP BY weekday`).all()
+        SELECT strftime('%w',h.watched_at,'localtime') weekday FROM watch_history h JOIN content_items c ON c.id=h.content_id WHERE c.deleted_at IS NULL AND c.type='movie' AND ${joinedOwnership.sql}
+        UNION ALL SELECT strftime('%w',eh.watched_at,'localtime') FROM episode_watch_history eh JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id JOIN content_items c ON c.id=s.series_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}
+        ) GROUP BY weekday`).all(...joinedOwnership.parameters,...joinedOwnership.parameters)
         .forEach((row) => { weekdayActivity[weekdayNames[Number(row.weekday)]] = row.count; });
     const libraryGrowth = {};
     database.prepare(`SELECT strftime('%Y-%m',created_at,'localtime') month,COUNT(*) count FROM content_items
-        WHERE deleted_at IS NULL GROUP BY month ORDER BY month`).all().forEach((row) => { libraryGrowth[row.month] = row.count; });
+        WHERE deleted_at IS NULL AND ${ownership.sql} GROUP BY month ORDER BY month`).all(...ownership.parameters).forEach((row) => { libraryGrowth[row.month] = row.count; });
     const runtimeDistribution = { 'Under 60 min':0,'60–89 min':0,'90–119 min':0,'120–149 min':0,'150+ min':0 };
     rows.forEach((row) => {
         if (row.runtime_minutes == null) return;
@@ -930,15 +1008,16 @@ function getStatistics() {
     });
     const sourceMethods = {},linkDomains = {},contentRatings = {};
     rows.forEach((row) => {
-        parseJson(row.watch_sources_json).forEach((source) => count(sourceMethods,source.method));
-        parseJson(row.content_ratings_json).forEach((rating) => count(contentRatings,`${rating.territory} ${rating.code}`));
+        const metadata=relationalMetadata.get(row.id);
+        metadata.watchSources.forEach((source) => count(sourceMethods,source.method));
+        metadata.contentRatings.forEach((rating) => count(contentRatings,`${rating.territory} ${rating.code}`));
     });
     database.prepare(`SELECT domain,COUNT(*) count FROM content_links l JOIN content_items c ON c.id=l.content_id
-        WHERE c.deleted_at IS NULL GROUP BY domain ORDER BY count DESC`).all().forEach((row) => count(linkDomains,normalizeLinkDomain(row.domain),row.count));
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} GROUP BY domain ORDER BY count DESC`).all(...joinedOwnership.parameters).forEach((row) => count(linkDomains,normalizeLinkDomain(row.domain),row.count));
     const modePersonalRating = Object.entries(personalRatings).sort((a,b) => b[1] - a[1])[0]?.[0] || null;
     const topCountries = Object.entries(countries).sort((a,b) => b[1] - a[1]).slice(0,3).map(([code,total]) => ({ code,total }));
     const linkedTitles = database.prepare(`SELECT COUNT(DISTINCT l.content_id) count FROM content_links l
-        JOIN content_items c ON c.id=l.content_id WHERE c.deleted_at IS NULL`).get().count;
+        JOIN content_items c ON c.id=l.content_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}`).get(...joinedOwnership.parameters).count;
     return { generatedAt:new Date().toISOString(),summary:{ total:rows.length,watchedTitles,totalWatchSessions,totalMinutesWatched,
         rewatchedTitles,ratedTitles,linkedTitles,modePersonalRating,topCountries,countries:Object.keys(countries).length,
         episodesWatched,episodeWatchSessions,seriesWatchCycles,rewatchedEpisodes,completedSeasons,completedSeries,partiallyWatchedSeries },
@@ -949,6 +1028,7 @@ function getStatistics() {
 
 // Builds an actionable data-quality report without exposing full library records.
 function getDataHealth() {
+    const ownership=ownerScope(); const joinedOwnership=ownerScope('c');
     const checks=[
         ['missingPosters','Entries without posters',"trim(poster_url)=''"],
         ['missingReleaseDates','Entries without release dates',"release_date IS NULL OR release_date=''"],
@@ -958,25 +1038,26 @@ function getDataHealth() {
     ];
     const results={};
     checks.forEach(([key,label,where]) => {
-        const items=database.prepare(`SELECT id,title FROM content_items WHERE deleted_at IS NULL AND (${where}) ORDER BY title COLLATE NOCASE LIMIT 100`).all();
-        results[key]={ label,count:database.prepare(`SELECT COUNT(*) count FROM content_items WHERE deleted_at IS NULL AND (${where})`).get().count,items };
+        const items=database.prepare(`SELECT id,title FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql} AND (${where}) ORDER BY title COLLATE NOCASE LIMIT 100`).all(...ownership.parameters);
+        results[key]={ label,count:database.prepare(`SELECT COUNT(*) count FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql} AND (${where})`).get(...ownership.parameters).count,items };
     });
     const emptySeasons=database.prepare(`SELECT c.id,c.title,s.season_number FROM seasons s JOIN content_items c ON c.id=s.series_id
-        WHERE c.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM episodes e WHERE e.season_id=s.id) ORDER BY c.title COLLATE NOCASE,s.season_number LIMIT 100`).all();
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} AND NOT EXISTS(SELECT 1 FROM episodes e WHERE e.season_id=s.id) ORDER BY c.title COLLATE NOCASE,s.season_number LIMIT 100`).all(...joinedOwnership.parameters);
     results.seasonsWithoutEpisodes={ label:'Seasons without episodes',count:database.prepare(`SELECT COUNT(*) count FROM seasons s JOIN content_items c ON c.id=s.series_id
-        WHERE c.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM episodes e WHERE e.season_id=s.id)`).get().count,items:emptySeasons };
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} AND NOT EXISTS(SELECT 1 FROM episodes e WHERE e.season_id=s.id)`).get(...joinedOwnership.parameters).count,items:emptySeasons };
     const incompleteCompanyWhere="lower(pc.name) IN ('company','limited','incorporated','corporation','private','limited liability company','limited liability partnership','public limited company','limited partnership')";
     results.incompleteProductionCompanyNames={ label:'Titles with incomplete company names',items:database.prepare(`SELECT DISTINCT c.id,c.title,pc.name company
         FROM content_items c JOIN content_production_companies cpc ON cpc.content_id=c.id JOIN production_companies pc ON pc.id=cpc.company_id
-        WHERE c.deleted_at IS NULL AND ${incompleteCompanyWhere} ORDER BY c.title COLLATE NOCASE LIMIT 100`).all() };
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} AND ${incompleteCompanyWhere} ORDER BY c.title COLLATE NOCASE LIMIT 100`).all(...joinedOwnership.parameters) };
     results.incompleteProductionCompanyNames.count=database.prepare(`SELECT COUNT(DISTINCT c.id) count FROM content_items c
         JOIN content_production_companies cpc ON cpc.content_id=c.id JOIN production_companies pc ON pc.id=cpc.company_id
-        WHERE c.deleted_at IS NULL AND ${incompleteCompanyWhere}`).get().count;
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} AND ${incompleteCompanyWhere}`).get(...joinedOwnership.parameters).count;
     results.duplicateTitles={ label:'Possible duplicate titles',items:database.prepare(`SELECT type,lower(trim(title)) key,group_concat(id,char(31)) ids,group_concat(title,char(31)) titles,COUNT(*) count
-        FROM content_items WHERE deleted_at IS NULL GROUP BY type,lower(trim(title)),ifnull(release_date,'') HAVING COUNT(*)>1 ORDER BY count DESC LIMIT 100`).all()
+        FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql} GROUP BY type,lower(trim(title)),ifnull(release_date,'') HAVING COUNT(*)>1 ORDER BY count DESC LIMIT 100`).all(...ownership.parameters)
         .map((row) => ({ ...row,items:row.ids.split(String.fromCharCode(31)).map((id,index) => ({ id,title:row.titles.split(String.fromCharCode(31))[index] })) })) };
     results.duplicateTitles.count=results.duplicateTitles.items.length;
-    const activeRows=database.prepare('SELECT id,title,type,release_status,release_date,series_end_date,series_network,genres_json,presentation_forms_json,languages_json,tags_json,awards_json,countries_json,content_ratings_json,watch_sources_json,poster_url,trailer_url FROM content_items WHERE deleted_at IS NULL').all();
+    const activeRows=database.prepare(`SELECT id,title,type,release_status,release_date,series_end_date,series_network,poster_url,trailer_url FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql}`).all(...ownership.parameters);
+    const healthMetadata=getRelationalMetadata(activeRows.map((row) => row.id));
     const urlIssues=[]; const unrated=[]; const unrecognized=[]; const lifecycleIssues=[]; const sourceIssues=[];
     const catalogs=getCatalogs();
     const flatten=(groups=[]) => new Set(groups.flatMap((group) => [group.name,...(group.children || [])]));
@@ -985,18 +1066,19 @@ function getDataHealth() {
     const knownRatings=new Map(catalogs.ratingSystems.map((system) => [system.territory,new Set(system.codes)]));
     const validUrl=(value) => { if (!value) return true; try { return ['http:','https:'].includes(new URL(value).protocol); } catch { return false; } };
     activeRows.forEach((row) => {
+        const metadata=healthMetadata.get(row.id);
         if (!validUrl(row.poster_url)) urlIssues.push({ id:row.id,title:row.title,field:'Poster URL' });
         if (!validUrl(row.trailer_url)) urlIssues.push({ id:row.id,title:row.title,field:'Trailer URL' });
-        const ratings=parseJson(row.content_ratings_json);
+        const ratings=metadata.contentRatings;
         if (['Released','Airing','Between Seasons','Hiatus','Returning','Ended'].includes(row.release_status) && !ratings.length) unrated.push({ id:row.id,title:row.title });
         const invalidValues=[];
-        parseJson(row.genres_json).filter((value) => !knownGenres.has(value)).forEach((value) => invalidValues.push(`genre: ${value}`));
-        parseJson(row.presentation_forms_json).filter((value) => !knownPresentations[row.type]?.has(value)).forEach((value) => invalidValues.push(`presentation: ${value}`));
-        parseJson(row.countries_json).filter((value) => !knownCountries.has(value)).forEach((value) => invalidValues.push(`country: ${value}`));
+        metadata.genres.filter((value) => !knownGenres.has(value)).forEach((value) => invalidValues.push(`genre: ${value}`));
+        metadata.presentationForms.filter((value) => !knownPresentations[row.type]?.has(value)).forEach((value) => invalidValues.push(`presentation: ${value}`));
+        metadata.countryOfOrigin.filter((value) => !knownCountries.has(value)).forEach((value) => invalidValues.push(`country: ${value}`));
         ratings.filter((rating) => !knownRatings.get(rating.territory)?.has(rating.code)).forEach((rating) => invalidValues.push(`rating: ${rating.territory} ${rating.code}`));
         if (invalidValues.length) unrecognized.push({ id:row.id,title:row.title,values:invalidValues.join(', ') });
         if (row.type === 'series' && row.release_status === 'Ended' && !row.series_end_date) lifecycleIssues.push({ id:row.id,title:row.title,issue:'Ended without an end date' });
-        parseJson(row.watch_sources_json).filter((source) => !source.method).forEach(() => sourceIssues.push({ id:row.id,title:row.title,issue:'Watching source without a method' }));
+        metadata.watchSources.filter((source) => !source.method).forEach(() => sourceIssues.push({ id:row.id,title:row.title,issue:'Watching source without a method' }));
     });
     const resultList=(label,items) => ({ label,count:items.length,items:items.slice(0,100) });
     results.invalidUrls=resultList('Entries with invalid URLs',urlIssues);
@@ -1005,16 +1087,22 @@ function getDataHealth() {
     results.inconsistentSeriesLifecycle=resultList('Series with inconsistent lifecycle dates',lifecycleIssues);
     results.incompleteWatchingSources=resultList('Entries with incomplete watching sources',sourceIssues);
     const episodeIssues=database.prepare(`SELECT c.id,c.title,COUNT(*) issue_count FROM content_items c JOIN seasons s ON s.series_id=c.id JOIN episodes e ON e.season_id=s.id
-        WHERE c.deleted_at IS NULL AND (e.runtime_minutes IS NULL OR e.air_date IS NULL OR trim(e.air_date)='') GROUP BY c.id,c.title ORDER BY c.title COLLATE NOCASE`).all();
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} AND (e.runtime_minutes IS NULL OR e.air_date IS NULL OR trim(e.air_date)='') GROUP BY c.id,c.title ORDER BY c.title COLLATE NOCASE`).all(...joinedOwnership.parameters);
     results.incompleteEpisodes={ label:'Series with episodes missing runtime or release date',count:episodeIssues.length,items:episodeIssues };
     const chronologyIssues=database.prepare(`SELECT DISTINCT c.id,c.title FROM content_items c JOIN watch_history h ON h.content_id=c.id
-        WHERE c.deleted_at IS NULL AND c.release_date IS NOT NULL AND date(h.watched_at)<date(c.release_date)
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} AND c.release_date IS NOT NULL AND date(h.watched_at)<date(c.release_date)
         UNION SELECT DISTINCT c.id,c.title FROM content_items c JOIN seasons s ON s.series_id=c.id JOIN episodes e ON e.season_id=s.id
-        JOIN episode_watch_history eh ON eh.episode_id=e.id WHERE c.deleted_at IS NULL
-        AND date(eh.watched_at)<date(COALESCE(NULLIF(e.air_date,''),NULLIF(s.release_date,''),c.release_date)) ORDER BY title COLLATE NOCASE`).all();
+        JOIN episode_watch_history eh ON eh.episode_id=e.id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}
+        AND date(eh.watched_at)<date(COALESCE(NULLIF(e.air_date,''),NULLIF(s.release_date,''),c.release_date)) ORDER BY title COLLATE NOCASE`).all(...joinedOwnership.parameters,...joinedOwnership.parameters);
     results.viewingBeforeRelease=resultList('Titles with viewing dates before release',chronologyIssues);
+    const missingWatchLanguages=database.prepare(`SELECT c.id,c.title,COUNT(*) issue_count FROM content_items c JOIN (
+        SELECT content_id,NULL series_id FROM watch_history WHERE trim(language_tag)=''
+        UNION ALL
+        SELECT NULL content_id,s.series_id FROM episode_watch_history eh JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id WHERE trim(eh.language_tag)=''
+    ) missing ON missing.content_id=c.id OR missing.series_id=c.id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} GROUP BY c.id,c.title ORDER BY c.title COLLATE NOCASE`).all(...joinedOwnership.parameters);
+    results.missingWatchLanguages={ label:'Titles with watch records missing a language',count:missingWatchLanguages.length,items:missingWatchLanguages };
     const validCreditRoles=new Set(['Creator','Co-Creator','Developer','Showrunner','Executive Producer','Producer','Head Writer','Series Director','Original Work Creator','Other']);
-    const creditIssues=database.prepare(`SELECT c.id,c.title,sc.person_name,sc.role FROM series_credits sc JOIN content_items c ON c.id=sc.series_id WHERE c.deleted_at IS NULL`).all()
+    const creditIssues=database.prepare(`SELECT c.id,c.title,sc.person_name,sc.role FROM series_credits sc JOIN content_items c ON c.id=sc.series_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}`).all(...joinedOwnership.parameters)
         .filter((credit) => !validCreditRoles.has(credit.role));
     results.unrecognizedSeriesCredits=resultList('Series credits with unrecognized roles',creditIssues);
     const canonicalGroups=[];
@@ -1029,9 +1117,9 @@ function getDataHealth() {
         });
         groups.forEach((variants,key) => { if (variants.size > 1) canonicalGroups.push({ category,label,key,variants:[...variants.values()].sort((a,b) => b.count-a.count || a.value.localeCompare(b.value)),preferred:[...variants.values()].sort((a,b) => b.count-a.count)[0].value }); });
     };
-    collectVariants('watchProvider','Watching-source providers',activeRows.flatMap((row) => parseJson(row.watch_sources_json).filter((source) => source.provider).map((source) => ({ id:row.id,title:row.title,value:source.provider }))));
+    collectVariants('watchProvider','Watching-source providers',activeRows.flatMap((row) => healthMetadata.get(row.id).watchSources.filter((source) => source.provider).map((source) => ({ id:row.id,title:row.title,value:source.provider }))));
     collectVariants('network','Series networks',activeRows.filter((row) => row.type === 'series').flatMap((row) => String(row.series_network || '').split(',').map((value) => ({ id:row.id,title:row.title,value }))));
-    collectVariants('creditName','Series-credit names',database.prepare(`SELECT c.id,c.title,sc.person_name value FROM series_credits sc JOIN content_items c ON c.id=sc.series_id WHERE c.deleted_at IS NULL`).all());
+    collectVariants('creditName','Series-credit names',database.prepare(`SELECT c.id,c.title,sc.person_name value FROM series_credits sc JOIN content_items c ON c.id=sc.series_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}`).all(...joinedOwnership.parameters));
     results.canonicalSuggestions=canonicalGroups;
     const companies=database.prepare(`SELECT pc.id,pc.name,pc.canonical_name,COUNT(DISTINCT cpc.content_id) uses
         FROM production_companies pc LEFT JOIN content_production_companies cpc ON cpc.company_id=pc.id
@@ -1039,25 +1127,30 @@ function getDataHealth() {
     const ignored=new Set(database.prepare('SELECT canonical_name FROM production_company_merge_ignores').all().map((row) => row.canonical_name));
     const groups=new Map(); companies.forEach((company) => { const list=groups.get(company.canonical_name) || []; list.push(company); groups.set(company.canonical_name,list); });
     const companyTitles=database.prepare(`SELECT c.id,c.title FROM content_production_companies cpc
-        JOIN content_items c ON c.id=cpc.content_id WHERE cpc.company_id=? AND c.deleted_at IS NULL ORDER BY c.title COLLATE NOCASE LIMIT 12`);
-    results.companySuggestions=[...groups.entries()].filter(([key,members]) => members.length > 1 && !ignored.has(key)).map(([key,members]) => ({
-        key,preferred:members[0].name,companies:members.map((company) => ({ ...company,titles:companyTitles.all(company.id) })),
+        JOIN content_items c ON c.id=cpc.content_id WHERE cpc.company_id=? AND c.deleted_at IS NULL AND ${joinedOwnership.sql} ORDER BY c.title COLLATE NOCASE LIMIT 12`);
+    results.companySuggestions=currentAccount()?.role === 'member' ? [] : [...groups.entries()].filter(([key,members]) => members.length > 1 && !ignored.has(key)).map(([key,members]) => ({
+        key,preferred:members[0].name,companies:members.map((company) => ({ ...company,titles:companyTitles.all(company.id,...joinedOwnership.parameters) })),
     }));
     return { generatedAt:new Date().toISOString(),checks:results };
 }
 
 // Applies a confirmed canonical spelling to provider, network, or series-credit records.
 function mergeCanonicalValues(payload,context={}) {
+    if (currentAccount()?.role === 'member') throw Object.assign(new Error('Only the CineVault owner can merge shared catalog values'),{ status:403 });
     const category=String(payload.category || ''); const preferred=normalizeSingleLineText(payload.preferred);
     const variants=[...new Set((Array.isArray(payload.variants) ? payload.variants : []).map(normalizeSingleLineText).filter(Boolean))];
     if (!['watchProvider','network','creditName'].includes(category) || !preferred || variants.length < 2) throw Object.assign(new Error('Choose a supported category, canonical value, and at least two variants'),{ status:400 });
     const selected=new Set(variants.map((value) => value.toLocaleLowerCase())); const backupFile=createDatabaseBackup(database,'pre-canonical-merge'); const now=new Date().toISOString();
     let updated=0;
     runTransaction(() => {
-        if (category === 'watchProvider') database.prepare('SELECT id,watch_sources_json FROM content_items WHERE deleted_at IS NULL').all().forEach((row) => {
-            const sources=parseJson(row.watch_sources_json); let changed=false;
-            sources.forEach((source) => { if (selected.has(normalizeSingleLineText(source.provider).toLocaleLowerCase())) { source.provider=preferred; changed=true; } });
-            if (changed) { database.prepare('UPDATE content_items SET watch_sources_json=?,updated_at=? WHERE id=?').run(JSON.stringify(normalizeWatchSources(sources)),now,row.id); updated += 1; }
+        if (category === 'watchProvider') database.prepare(`SELECT DISTINCT cws.content_id id FROM content_watch_sources cws JOIN content_items c ON c.id=cws.content_id
+            WHERE c.deleted_at IS NULL AND lower(cws.provider) IN (${variants.map(() => '?').join(',')})`).all(...variants.map((value) => value.toLocaleLowerCase())).forEach((row) => {
+            const sources=database.prepare('SELECT method,provider FROM content_watch_sources WHERE content_id=? ORDER BY display_order').all(row.id)
+                .map((source) => ({ ...source,provider:selected.has(normalizeSingleLineText(source.provider).toLocaleLowerCase()) ? preferred : source.provider }));
+            const normalized=normalizeWatchSources(sources); database.prepare('DELETE FROM content_watch_sources WHERE content_id=?').run(row.id);
+            const insert=database.prepare('INSERT INTO content_watch_sources(id,content_id,method,provider,display_order) VALUES(?,?,?,?,?)');
+            normalized.forEach((source,index) => insert.run(crypto.randomUUID(),row.id,source.method,source.provider || '',index));
+            database.prepare('UPDATE content_items SET updated_at=? WHERE id=?').run(now,row.id); updated += 1;
         });
         if (category === 'network') database.prepare("SELECT id,series_network FROM content_items WHERE type='series' AND deleted_at IS NULL").all().forEach((row) => {
             const values=String(row.series_network || '').split(',').map(normalizeSingleLineText).filter(Boolean); const replaced=values.map((value) => selected.has(value.toLocaleLowerCase()) ? preferred : value);
@@ -1071,6 +1164,7 @@ function mergeCanonicalValues(payload,context={}) {
 
 // Merges reviewed company aliases into one canonical record and refreshes affected titles.
 function mergeProductionCompanies(payload,context={}) {
+    if (currentAccount()?.role === 'member') throw Object.assign(new Error('Only the CineVault owner can merge shared production companies'),{ status:403 });
     const selectedKeepId=String(payload.keepId || '');
     const selectedMergeIds=[...new Set((Array.isArray(payload.mergeIds) ? payload.mergeIds : []).map(String).filter((id) => id && id !== selectedKeepId))];
     const selectedKeep=database.prepare('SELECT * FROM production_companies WHERE id=?').get(selectedKeepId);
@@ -1112,6 +1206,7 @@ function mergeProductionCompanies(payload,context={}) {
 
 // Dismisses one reviewed duplicate suggestion without changing company or title data.
 function dismissProductionCompanySuggestion(key,context={}) {
+    if (currentAccount()?.role === 'member') throw Object.assign(new Error('Only the CineVault owner can dismiss shared company suggestions'),{ status:403 });
     const canonical=String(key || '').trim();
     if (!canonical) throw Object.assign(new Error('A company suggestion key is required'),{ status:400 });
     database.prepare('INSERT OR REPLACE INTO production_company_merge_ignores(canonical_name,created_at) VALUES(?,?)').run(canonical,new Date().toISOString());
@@ -1131,7 +1226,7 @@ function importItems(payload) {
             episodes:(payload.episodes || []).filter((episode) => episode.season_id === season.id).map((episode) => ({
                 id:episode.id,episodeNumber:episode.episode_number,title:episode.title,airDate:episode.air_date || '',duration:episode.runtime_minutes ?? '',
                 progressSeconds:episode.progress_seconds || 0,summary:episode.summary || '',episodeType:episode.episode_type || 'Regular',director:episode.director || '',watchHistory:(payload.episodeWatchHistory || [])
-                    .filter((history) => history.episode_id === episode.id).map((history) => ({ id:history.id,watchedAt:history.watched_at })),
+                    .filter((history) => history.episode_id === episode.id).map((history) => ({ id:history.id,watchedAt:history.watched_at,languageTag:history.language_tag || '' })),
             })),
         }));
         return { ...item,seasons };
@@ -1163,14 +1258,15 @@ function importValidationIssues(item,existing={}) {
 
 // Compares an export with the active library without changing stored data.
 function previewImport(payload) {
+    const ownership=ownerScope();
     const items=importItems(payload);
     const identities=new Map();
     const rows=items.map((item) => {
         const type=item.type === 'series' ? 'series' : 'movie';
         const identity=`${type}\u0000${normalizeTitle(item.title)}\u0000${item.releaseDate || ''}`;
         const repeated=identities.has(identity); identities.set(identity,true);
-        const match=database.prepare("SELECT id,title,deleted_at FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=?")
-            .get(normalizeTitle(item.title),item.releaseDate || '',type);
+        const match=database.prepare(`SELECT id,title,deleted_at FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND ${ownership.sql}`)
+            .get(normalizeTitle(item.title),item.releaseDate || '',type,...ownership.parameters);
         const issues=importValidationIssues(item,match ? getById(match.id) : {});
         if (repeated) issues.push('The import contains another title with the same content type, title, and release date');
         return { importId:item.id,title:item.title || 'Untitled',type,releaseDate:item.releaseDate || '',existingId:match?.id || null,conflict:Boolean(match),valid:issues.length === 0,issues };
@@ -1184,6 +1280,7 @@ function previewImport(payload) {
 
 // Applies reviewed import decisions after creating one verified recovery backup.
 function applyImport(payload,decisions = {},context = {},options = {}) {
+    const ownership=ownerScope();
     const items=importItems(payload);
     const strategy=options.strategy === 'replace-library' ? 'replace-library' : 'add-new';
     const subsetExport=payload.isSubset === true || (payload.isSubset == null && (payload.scope || 'Library') !== 'Library');
@@ -1191,8 +1288,8 @@ function applyImport(payload,decisions = {},context = {},options = {}) {
         throw Object.assign(new Error('Type REPLACE WITH SUBSET to authorize replacing the library with a partial export'),{ status:400 });
     }
     const reviewed=items.map((incoming) => {
-        const existingRow=database.prepare("SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=?")
-            .get(normalizeTitle(incoming.title),incoming.releaseDate || '',incoming.type === 'series' ? 'series' : 'movie');
+        const existingRow=database.prepare(`SELECT id FROM content_items WHERE lower(trim(title))=? AND ifnull(release_date,'')=? AND type=? AND ${ownership.sql}`)
+            .get(normalizeTitle(incoming.title),incoming.releaseDate || '',incoming.type === 'series' ? 'series' : 'movie',...ownership.parameters);
         return { incoming,existingRow,issues:importValidationIssues(incoming,strategy === 'add-new' && existingRow ? getById(existingRow.id) : {}) };
     });
     const invalid=reviewed.filter((item) => item.issues.length);
@@ -1203,7 +1300,7 @@ function applyImport(payload,decisions = {},context = {},options = {}) {
     const backup=createDatabaseBackup(database,'pre-json-import');
     const result={ strategy,added:0,replaced:0,merged:0,skipped:0,skippedInvalid:invalid.length,backup:path.basename(backup) };
     runTransaction(() => {
-    if (strategy === 'replace-library') database.prepare('DELETE FROM content_items').run();
+    if (strategy === 'replace-library') database.prepare(`DELETE FROM content_items WHERE ${ownership.sql}`).run(...ownership.parameters);
     accepted.forEach(({ incoming,existingRow }) => {
         if (strategy === 'replace-library' || !existingRow) {
             const importedId=strategy === 'replace-library' && payload.exportType !== 'clean' && incoming.id ? incoming.id : crypto.randomUUID();
@@ -1256,6 +1353,8 @@ function getAudit(query = {}) {
     const page = Math.max(1,Number(query.page) || 1);
     const clauses = ['1=1'];
     const parameters = [];
+    const account=currentAccount();
+    if (account?.role !== 'owner' && account?.email) { clauses.push('actor=?'); parameters.push(account.email); }
     for (const [queryName,column] of [['action','action'],['entityId','entity_id'],['outcome','outcome']]) {
         if (query[queryName]) { clauses.push(`${column}=?`); parameters.push(query[queryName]); }
     }

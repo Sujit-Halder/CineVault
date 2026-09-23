@@ -8,6 +8,7 @@ const { migrationReport } = require('./database');
 const logger = require('./logger');
 const { requestLogging, unhandledErrorLogging } = require('./request-logging');
 const security=require('./security');
+const { runWithAccount }=require('./request-context');
 const Model=require('./model');
 security.setAuditRecorder(Model.recordAudit);
 const app = express();
@@ -67,9 +68,15 @@ app.use('/api',(_req,res,next) => {
 });
 
 app.get('/api/auth/status',security.status);
+app.post('/api/auth/setup',security.setup);
 app.post('/api/auth/login',security.login);
+app.post('/api/auth/signup',security.signup);
+app.post('/api/auth/forgot-password',security.forgotPassword);
+app.post('/api/auth/reset-password',security.resetPassword);
 app.post('/api/auth/logout',security.logout);
+app.post('/api/auth/invitations',security.authentication,security.invite);
 app.use('/api',security.authentication);
+app.use('/api',(req,_res,next) => runWithAccount(req.authenticatedAccount,next));
 
 // Example route
 app.get('/api', (req, res) => {

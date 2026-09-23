@@ -15,7 +15,7 @@
 </div>
 
 > [!NOTE]
-> CineVault is designed for personal or trusted private hosting. It does not include public account registration.
+> CineVault is designed for private hosting. Accounts are invitation-only; public registration is intentionally unavailable and each member receives an isolated library.
 
 > [!IMPORTANT]
 > Never commit `backend/.env`, `frontend/.env`, the SQLite database, exports, logs, backups, or recovery folders. Before publishing this repository, use placeholder `.env.example` files, rotate any password that has ever been committed, and remove tracked secret files with `git rm --cached backend/.env frontend/.env`.
@@ -73,7 +73,7 @@ Library results are fetched with server pagination rather than loading the full 
 
 The library can be displayed as spacious cards, compact cards, or an audit-oriented table. The table supports column selection, keyboard row navigation, cross-page title selection, and reviewed bulk changes to production or release status. Table selections remain active while paging and can be exported together. Every delete action requires confirmation; permanent deletion additionally requires the exact title and creates a verified recovery backup first.
 
-The editor progressively enables metadata based on lifecycle and viewing state. Unavailable fields remain visible with explanatory messages. A watched movie requires a release date and at least one watch-timeline event. Series viewing is derived only from episode watch histories. “Where to find this movie/series” stores repeatable HTTP(S) URLs and displays normalized domains; watch sources store a viewing method separately from an optional provider.
+The editor progressively enables metadata based on lifecycle and viewing state. Its Identity, Classification, Artwork, Viewing, Seasons, and Availability steps collapse independently so long records can be updated without scrolling through unrelated fields. Unavailable fields remain visible with explanatory messages. A watched movie requires a release date and at least one watch-timeline event. Series viewing is derived only from episode watch histories. “Where to find this movie/series” stores repeatable HTTP(S) URLs and displays normalized domains; watch sources store a viewing method separately from an optional provider.
 
 ## 🖼️ Preview
 
@@ -134,7 +134,8 @@ The editor progressively enables metadata based on lifecycle and viewing state. 
 
 ```mermaid
 flowchart LR
-    UI[React + Vite UI] -->|REST /api/v1| API[Express API]
+    UI[React + Vite UI] -->|Invitation-only session + REST| API[Express API]
+    API --> AUTH[Accounts, invitations, sessions & recovery]
     API --> REPO[Repository & validation]
     REPO --> DB[(SQLite)]
     API --> CAT[Country, rating, genre & source catalogs]
@@ -157,6 +158,10 @@ Content
 - Movie runtime is stored directly.
 - Episode runtime is stored on each episode.
 - Season and series runtimes are calculated from known episode runtimes.
+
+Account identity and library ownership are relational. `app_users` stores salted scrypt password hashes and roles; `auth_sessions`, `auth_invitations`, and `password_reset_tokens` store only one-way token hashes and expirations. `library_entries` represents each user's saved title state, while `content_items.owner_user_id` enforces the isolated-library boundary.
+
+Repeatable metadata is relational: `metadata_terms` + `content_metadata_terms` cover genres, presentation forms, awards, and tags; dedicated tables store original-production languages, origin countries, complete official-rating provenance, and watching sources. Production companies, series credits, seasons, episodes, viewing events, and content links also use dedicated related tables. Runtime hydration, strict filters, statistics, Data Health, imports, and exports are assembled with SQL queries. Schema migration 41 verifies row-for-row parity, creates a verified backup, and removes the superseded metadata JSON columns.
 
 ### Lifecycle and credits
 
@@ -188,6 +193,8 @@ Movies retain a Director(s) field. Series instead use repeatable whole-series cr
 | Season | Same production catalog | Unscheduled, Upcoming, Airing, Released, Canceled | Not Started, In Progress, or Completed from episode histories |
 
 Viewing status is never accepted as an editable source of truth. Movies are watched when their watch timeline is non-empty. A season is complete when every existing episode has at least one watch event. A series is complete when every existing episode across every season has at least one watch event. A full-series watch count is the minimum episode-watch count across all existing episodes.
+
+Languages use a curated audiovisual-media subset of canonical BCP 47 tags. The interface displays readable names, while original-production languages are stored on the title and the required audio language used for viewing is stored independently on every movie or episode watch event. Clean and complete JSON exports retain both kinds of language data.
 
 ### Series hierarchy
 
@@ -374,6 +381,8 @@ Create `backend/.env`:
 WEBSITE=http://localhost:3000
 PORT=3001
 APP_PASSWORD=replace-with-a-long-local-password
+GMAIL_SMTP_USER=your-cinevault-mailbox@gmail.com
+GMAIL_APP_PASSWORD=your-google-app-password
 MOVIE_TRACKER_TIME_ZONE=Asia/Kolkata
 ```
 
@@ -407,6 +416,10 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+On the first account-aware startup, CineVault asks for the existing `APP_PASSWORD`, an owner Gmail address, display name, and a new account password. The owner account claims the existing library. After that, `APP_PASSWORD` is only a setup compatibility value; sign-in uses the password hash stored for the account. The owner can send a 48-hour Gmail invitation from the header. There is no public signup route: invited members must use the exact Gmail address in their link. Password-recovery links expire after one hour and invalidate existing sessions after use.
+
+For Gmail delivery, enable two-step verification for the mailbox, create a Google app password, and store it only as `GMAIL_APP_PASSWORD`. In development, when Gmail SMTP is not configured, the backend writes the invitation or reset URL to the application log for local testing; production refuses to pretend that an email was sent.
+
 On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. Backup and export folders appear later only when their corresponding features are used. Legacy JSON is imported only when `backend/movies.json` exists and a database has not already been initialized; keep its generated migration report and pre-SQLite archive until the imported library has been verified. Subsequent startups use the SQLite database directly.
 
 ## ⚙️ Configuration reference
@@ -417,7 +430,9 @@ On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. B
 |---|---:|---|
 | `PORT` | none | Express API port; normally `3001` |
 | `WEBSITE` | disabled CORS | Comma-separated exact allowed frontend origins |
-| `APP_PASSWORD` | empty | Enables owner login when non-empty; use a long unique secret |
+| `APP_PASSWORD` | empty | Authorizes the one-time first-owner upgrade from the former single-password system |
+| `GMAIL_SMTP_USER` | empty | Gmail mailbox that sends account invitations and recovery links |
+| `GMAIL_APP_PASSWORD` | empty | Google app password for that mailbox; required for production invitation/recovery email |
 | `NODE_ENV` | development | Set to `production` for secure cookies and HSTS |
 | `TRUST_PROXY` | `0` | Set to `1` behind one trusted reverse proxy |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Per-client in-memory request allowance |
@@ -489,7 +504,7 @@ At the time of this documentation, the maintained suite contains 33 backend test
 
 ## 🔌 API reference
 
-All protected routes use the owner session cookie. Mutating requests require the CSRF value returned by authentication status/login in the `X-CSRF-Token` header. Responses receive `X-Request-Id` for correlation.
+All protected routes use a persisted account session cookie. Mutating requests require the CSRF value returned by authentication status/login in the `X-CSRF-Token` header. Responses receive `X-Request-Id` for correlation. Library queries and mutations are scoped to the signed-in user; owners can review system-wide security/operational audit events while members see their own activity.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -519,7 +534,12 @@ All protected routes use the owner session cookie. Mutating requests require the
 | `POST` | `/api/v1/session/connect` | Register a client connection and request an age-qualified asset scan |
 | `GET` | `/api/v1/asset-scan` | Read current scanner state |
 | `GET` | `/api/auth/status` | Read authentication state and current CSRF token |
-| `POST` | `/api/auth/login` | Create a 12-hour owner session |
+| `POST` | `/api/auth/setup` | Create the first owner and claim an existing library |
+| `POST` | `/api/auth/login` | Create a persisted 12-hour account session |
+| `POST` | `/api/auth/invitations` | Owner-only invitation for one Gmail address |
+| `POST` | `/api/auth/signup` | Create an account from one valid invitation token |
+| `POST` | `/api/auth/forgot-password` | Request a non-enumerating recovery email |
+| `POST` | `/api/auth/reset-password` | Consume a recovery token and invalidate old sessions |
 | `POST` | `/api/auth/logout` | Invalidate the current session |
 
 Legacy `/api/movie` endpoints remain available during the transition.
@@ -601,6 +621,8 @@ WEBSITE=https://movies.sujithalder.in
 MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault
 MOVIE_TRACKER_SKIP_LEGACY_IMPORT=1
 APP_PASSWORD=replace-with-a-long-random-unique-password
+GMAIL_SMTP_USER=your-cinevault-mailbox@gmail.com
+GMAIL_APP_PASSWORD=replace-with-a-google-app-password
 MOVIE_TRACKER_TIME_ZONE=Asia/Kolkata
 RATE_LIMIT_PER_MINUTE=300
 ```
@@ -880,6 +902,8 @@ WEBSITE=https://movies.sujithalder.in
 MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault
 MOVIE_TRACKER_SKIP_LEGACY_IMPORT=1
 APP_PASSWORD=replace-with-a-long-random-unique-password
+GMAIL_SMTP_USER=your-cinevault-mailbox@gmail.com
+GMAIL_APP_PASSWORD=replace-with-a-google-app-password
 MOVIE_TRACKER_TIME_ZONE=Asia/Kolkata
 RATE_LIMIT_PER_MINUTE=300
 MANUAL_BACKUP_RETENTION=10
@@ -1017,7 +1041,7 @@ These settings improve repeat visits and deployments by avoiding repeated downlo
 
 For internet hosting, place CineVault behind HTTPS and an authentication gateway such as a private VPN, identity-aware proxy, or invite-only reverse proxy. Do not expose the SQLite database, backups, exports, `.env` files, or source references through the frontend web root.
 
-Set `APP_PASSWORD` to enable CineVault's built-in owner login. It uses an HTTP-only, SameSite=Strict session cookie, a separate CSRF token for state-changing requests, a 12-hour session lifetime, restricted CORS, security headers, and request rate limiting. In production, terminate HTTPS at the reverse proxy and set `NODE_ENV=production`, `TRUST_PROXY=1`, and `WEBSITE` to the exact HTTPS frontend origin. `RATE_LIMIT_PER_MINUTE` defaults to 300.
+The first owner is created through the first-run screen; `APP_PASSWORD` authorizes that one-time conversion. Subsequent access uses invitation-only Gmail identities and scrypt-derived password hashes. Session, invitation, and recovery secrets are persisted only as SHA-256 hashes. Sessions use an HTTP-only, SameSite=Strict cookie, a separate CSRF token, a rolling 12-hour lifetime, restricted CORS, security headers, and request rate limiting. Configure Gmail SMTP for invitations and recovery. In production, terminate HTTPS at the reverse proxy and set `NODE_ENV=production`, `TRUST_PROXY=1`, and `WEBSITE` to the exact HTTPS frontend origin. `RATE_LIMIT_PER_MINUTE` defaults to 300.
 
 External media checks accept only HTTP(S), reject localhost and private-network destinations, validate redirects, limit redirects to three, request only a small byte range, and coalesce scans. Automatic connection checks have a 24-hour cooldown by default; change it with `ASSET_SCAN_COOLDOWN_HOURS`. The Data Health screen provides the explicit full-scan control.
 
@@ -1031,7 +1055,7 @@ Production companies are normalized into relational tables for exact filtering. 
 Internet → HTTPS access gateway → CineVault API → private SQLite storage
 ```
 
-The built-in login is intended for one owner, not public multi-user accounts. Sessions and rate-limit buckets are in memory, so this deployment should run one backend process. SQLite is appropriate for this personal single-writer workload; do not place the live database on an eventually consistent network-sync folder or run several application instances against separate copies.
+The account system supports one owner plus invited members with isolated libraries; it never exposes public registration. Sessions are persisted in SQLite, while rate-limit buckets remain process-local. SQLite remains appropriate for this trusted, low-concurrency deployment; run one backend process and do not place the live database on an eventually consistent network-sync folder or run several application instances against separate copies.
 
 ## 🔄 Updating and rolling back
 
@@ -1055,7 +1079,8 @@ Check `sudo systemctl status cinevault`, `sudo journalctl -u cinevault`, the bro
 | `database disk image is malformed` | Stop the backend; preserve the DB/WAL/SHM set; verify backups read-only; restore the newest integral backup. Never attach WAL/SHM files from another database image. |
 | Backup popup says it failed | Inspect `backend/logs/error.jsonl`, Activity failures, disk space, directory permissions, and `PRAGMA integrity_check`. |
 | Restore refuses to run | A live `backend/data/server.lock` process is protecting the database. Stop the backend cleanly. Remove a stale lock only after verifying its PID is not running. |
-| Browser receives 401 | Log in again; sessions disappear after backend restart. Confirm `APP_PASSWORD` is set on the running process. |
+| Browser receives 401 | Sign in again and confirm the account is active; persisted sessions survive ordinary backend restarts but expire after 12 hours of inactivity. |
+| Invitation/recovery email is absent | Confirm `GMAIL_SMTP_USER` and a Google app password in `GMAIL_APP_PASSWORD`; inspect Activity and application logs without exposing the secret. |
 | Browser receives 403 on edits | Refresh authentication status so the frontend has the current CSRF token; confirm cookies are accepted. |
 | CORS or missing cookie in production | `WEBSITE` must exactly match the HTTPS frontend origin; set `NODE_ENV=production` and `TRUST_PROXY=1` behind one proxy. |
 | Blank page after deployment | Confirm `VITE_API_URL`, rebuild the frontend, verify Nginx SPA fallback, and inspect the browser console. |

@@ -11,7 +11,6 @@ const EMPTY_FORM = {
   awards:[],tags:[],presentationForms:[],productionCompany:'',productionCompanies:[],posterUrl:'',trailerUrl:'',summary:'',favorite:false,seasons:[],watchHistory:[],contentLinks:[],
 };
 
-const LANGUAGES = ['Arabic','Bengali','Chinese','English','French','German','Hindi','Italian','Japanese','Korean','Portuguese','Russian','Spanish','Tamil','Telugu','Thai'];
 const FALLBACK_EPISODE_TYPES = ['Regular','Pilot','Backdoor Pilot','Season Premiere','Midseason Premiere','Midseason Finale','Season Finale','Series Finale','Special','Holiday Special','Recap','Clip Show','Crossover','Two-Part Episode','Bonus','Webisode','Minisode','Unaired Episode'];
 const SERIES_CREDIT_ROLES=['Creator','Co-Creator','Developer','Showrunner','Executive Producer','Producer','Head Writer','Series Director','Original Work Creator','Other'];
 
@@ -23,6 +22,9 @@ const calendarDateValue = (value) => {
   const part = (number) => String(number).padStart(2,'0');
   return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}`;
 };
+
+// Groups related metadata into a compact, independently collapsible editor step.
+const EditorSection=({ title,description,defaultOpen=false,children }) => <details className="editor-section" open={defaultOpen}><summary><span><strong>{title}</strong><small>{description}</small></span><span className="section-toggle" aria-hidden="true">+</span></summary><div className="editor-section-body">{children}</div></details>;
 
 // Buffers keyboard date editing and commits only after the native control is finished.
 const BufferedDateInput = ({ value,onCommit,...props }) => {
@@ -60,7 +62,10 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
   onCloseRef.current=onClose;
   const today=localToday();
   const episodeTypes=catalogs.episodeTypes || FALLBACK_EPISODE_TYPES;
+  const languageOptions=(catalogs.languages || []).map((language) => ({ value:language.tag,label:language.label }));
+  const defaultWatchLanguage=form.language.length === 1 ? form.language[0] : '';
   const hasEpisodeWatch=form.seasons.some((season) => season.episodes?.some((episode) => episode.watchHistory?.length));
+  const missingEpisodeWatchLanguages=form.seasons.reduce((total,season) => total + (season.episodes || []).reduce((episodeTotal,episode) => episodeTotal + (episode.watchHistory || []).filter((entry) => !entry.languageTag).length,0),0);
   const watched=form.type === 'movie' ? form.watchHistory.length > 0 : hasEpisodeWatch;
   const released=form.type === 'movie' ? form.releaseStatus === 'Released' : ['Airing','Between Seasons','Hiatus','Returning','Ended'].includes(form.releaseStatus);
   const trailerAvailable=!['Unscheduled','Unknown'].includes(form.releaseStatus) || Boolean(form.trailerUrl);
@@ -111,7 +116,7 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
   const removeSource = (index) => confirmRemoval('Remove this watching source from the entry?',() => update('watchSources',form.watchSources.filter((_,itemIndex) => itemIndex !== index)));
 
   // Adds an editable viewing record using the current local date and time.
-  const addWatch = () => { setWatchError(''); update('watchHistory',[...form.watchHistory,{ watchedAt:new Date().toISOString() }]); };
+  const addWatch = () => { setWatchError(''); update('watchHistory',[...form.watchHistory,{ watchedAt:new Date().toISOString(),languageTag:defaultWatchLanguage }]); };
 
   // Changes one viewing date while preserving its time component when possible.
   const updateWatch = (index,dateValue) => update('watchHistory',form.watchHistory.map((entry,itemIndex) => itemIndex === index
@@ -203,7 +208,7 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
   const addEpisodeWatch = (seasonIndex,episodeIndex) => {
     setWatchError('');
     const episode = form.seasons[seasonIndex].episodes[episodeIndex];
-    updateEpisode(seasonIndex,episodeIndex,{ watchHistory:[...(episode.watchHistory || []),{ watchedAt:new Date().toISOString() }] });
+    updateEpisode(seasonIndex,episodeIndex,{ watchHistory:[...(episode.watchHistory || []),{ watchedAt:new Date().toISOString(),languageTag:defaultWatchLanguage }] });
   };
 
   // Changes one episode viewing date while retaining the repeatable history record.
@@ -217,6 +222,14 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
   const removeEpisodeWatch = (seasonIndex,episodeIndex,watchIndex) => {
     const episode = form.seasons[seasonIndex].episodes[episodeIndex];
     confirmRemoval(`Delete this watch record for ${episode.title || `Episode ${episode.episodeNumber || episodeIndex + 1}`}?`,() => updateEpisode(seasonIndex,episodeIndex,{ watchHistory:(episode.watchHistory || []).filter((_,index) => index !== watchIndex) }));
+  };
+
+  // Assigns one confirmed audio language to every legacy episode viewing that has no language.
+  const fillMissingEpisodeWatchLanguages = (languageTag) => {
+    if (!languageTag) return;
+    setForm((current) => ({ ...current,seasons:current.seasons.map((season) => ({ ...season,episodes:(season.episodes || []).map((episode) => ({
+      ...episode,watchHistory:(episode.watchHistory || []).map((entry) => entry.languageTag ? entry : { ...entry,languageTag }),
+    })) })) }));
   };
 
   // Validates and submits the complete editor state.
@@ -236,11 +249,12 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
         <div className="panel-heading"><div><span className="eyebrow">LIBRARY ENTRY</span><h2 id="editor-title">{initialData ? 'Edit title' : 'Add a title'}</h2></div><button type="button" title="Close the editor; unsaved changes require confirmation" onClick={requestClose}>Close</button></div>
         <form onSubmit={submit}>
           {watchError && form.type === 'series' && <p className="field-error form-alert" role="alert">{watchError}</p>}
+          <EditorSection title="Identity & lifecycle" description="Title, format, dates, production, release and viewing state" defaultOpen>
           <div className="form-grid">
             <label className="span-two">Title<input required value={form.title} onChange={(event) => update('title', event.target.value)} /></label>
             <label className="span-two">Original title<input value={form.originalTitle} onChange={(event) => update('originalTitle', event.target.value)} /></label>
             <label>Content type<select value={form.type} onChange={(event) => { const type = event.target.value; setForm((current) => ({ ...current,type,subtype:catalogs.subtypes?.[type]?.[0] || '',presentationForms:[] })); }}><option value="movie">Movie</option><option value="series">Series</option></select></label>
-            <label>Subtype<select value={form.subtype} onChange={(event) => update('subtype', event.target.value)}>{(catalogs.subtypes?.[form.type] || []).map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label title={catalogs.subtypeDescriptions?.[form.subtype] || 'Choose the structural subtype'}>Subtype<select title={catalogs.subtypeDescriptions?.[form.subtype] || 'Choose the structural subtype'} value={form.subtype} onChange={(event) => update('subtype', event.target.value)}>{(catalogs.subtypes?.[form.type] || []).map((item) => <option key={item} title={catalogs.subtypeDescriptions?.[item] || ''}>{item}</option>)}</select><small>{catalogs.subtypeDescriptions?.[form.subtype]}</small></label>
             <label title="Where the title is in its creative and production process">Production status<select title={PRODUCTION_STATUSES.find(([value]) => value === form.productionStatus)?.[1]} value={form.productionStatus} onChange={(event) => update('productionStatus',event.target.value)}>{PRODUCTION_STATUSES.map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select></label>
             <label title="Where the title is in its public release lifecycle">Release status<select title={(form.type === 'series' ? SERIES_RELEASE_STATUSES : MOVIE_RELEASE_STATUSES).find(([value]) => value === form.releaseStatus)?.[1]} value={form.releaseStatus} onChange={(event) => update('releaseStatus',event.target.value)}>{(form.type === 'series' ? SERIES_RELEASE_STATUSES : MOVIE_RELEASE_STATUSES).map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select></label>
             {form.type === 'movie' && <label title={watched ? "A release date is required because this movie has been watched" : "The movie's official release date, when known"}>Release date {watched && <small>required</small>}<input required={watched} type="date" max={today} value={form.releaseDate} onChange={(event) => update('releaseDate', event.target.value)} /></label>}
@@ -253,11 +267,13 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
             <label title={watched ? 'Your personal assessment after watching this title' : 'Available after the title is marked Watched'}>Personal rating {!watched && <small className="lifecycle-note">Watched titles only</small>}<select disabled={!watched} value={form.rating} onChange={(event) => update('rating', event.target.value)}><option value="">Not rating</option>{PERSONAL_RATINGS.map((rating) => <option key={rating}>{rating}</option>)}</select></label>
             <label className="span-two">{animatedContent ? 'Voice Cast' : 'Cast'}<input value={form.casts} onChange={(event) => update('casts', event.target.value)} /></label>
           </div>
+          </EditorSection>
 
+          <EditorSection title="Classification & credits" description="Presentation, genre, languages, countries, credits, awards, tags and ratings">
           <div className="catalog-grid">
             <MultiSelect label="Presentation forms" help="Select how the work is produced or presented; available choices depend on movie or series type" options={catalogs.presentationForms?.[form.type] || []} grouped value={form.presentationForms} onChange={(value) => update('presentationForms',value)} />
             <MultiSelect label="Genres and subgenres" options={catalogs.genres} grouped value={form.genres} onChange={(value) => update('genres', value)} />
-            <MultiSelect label="Languages" help="Select every language substantially used by this title" options={LANGUAGES.map((language) => ({ value:language,label:language }))} value={form.language} onChange={(value) => update('language', value)} />
+            <MultiSelect label="Languages" help="Languages used in the title's original production" options={languageOptions} value={form.language} onChange={(value) => update('language', value)} />
             <MultiSelect label="Origin countries" help="Select every official production country; cards show full country names" options={countryOptions} value={form.countryOfOrigin} onChange={(value) => update('countryOfOrigin', value)} />
             <MultiSelect disabled={!watched} label="Awards" help={watched ? 'Awards received by this title' : 'Available for watched titles only'} options={AWARDS.map((value) => ({ value,label:value }))} value={form.awards} onChange={(value) => update('awards', value)} />
             <MultiSelect disabled={!watched} label="Tags" help={watched ? 'Personal discovery and viewing tags' : 'Available for watched titles only'} options={TAGS.map((value) => ({ value,label:value }))} value={form.tags} onChange={(value) => update('tags', value)} />
@@ -266,20 +282,27 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
           {form.type === 'series' && <fieldset className="series-editor"><legend title="People credited across the complete series rather than individual episodes">Series credits</legend><button type="button" className="secondary-action" title="Add a creator, developer, showrunner, producer, or other whole-series credit" onClick={addSeriesCredit}><FaPlus /> Add series credit</button>{form.seriesCredits.map((credit,index) => <div className="source-input-row" key={credit.id || index}><label title="Person credited across the series">Name<input value={credit.name} onChange={(event) => updateSeriesCredit(index,{ name:event.target.value })} /></label><label title="The person's whole-series responsibility">Role<select value={credit.role} onChange={(event) => updateSeriesCredit(index,{ role:event.target.value })}>{SERIES_CREDIT_ROLES.map((role) => <option key={role}>{role}</option>)}</select></label><button type="button" title={`Delete only the ${credit.role || 'series'} credit for ${credit.name || 'this person'}`} onClick={() => removeSeriesCredit(index)}><FaTrash /></button></div>)}</fieldset>}
 
           <fieldset className="rating-editor" disabled={!released} aria-disabled={!released} title={released ? 'Official age or content classification issued for each selected country or service' : 'Available after the title is released'}><legend>Official content ratings{!released && ' · released titles only'}</legend><div className="rating-controls"><select title="Choose the country or streaming-service rating authority" value={ratingTerritory} onChange={(event) => { setRatingTerritory(event.target.value); setRatingCode(''); }}>{catalogs.ratingSystems.map((system) => <option key={system.territory} value={system.territory}>{system.territory} · {system.authority}</option>)}</select><select title="Choose the official classification code" value={ratingCode} onChange={(event) => setRatingCode(event.target.value)}><option value="">Choose rating</option>{activeRatingSystem?.codes.map((code) => <option key={code}>{code}</option>)}</select><button type="button" title="Set this rating; an existing rating for the same territory will be replaced" onClick={addRating}>Set rating</button></div><div className="selected-chips">{form.contentRatings.map((rating, index) => <button type="button" title={`Remove ${rating.territory} ${rating.code}`} key={`${rating.territory}-${rating.code}-${index}`} onClick={() => removeRating(index)}>{rating.territory} {rating.code} ×</button>)}</div></fieldset>
+          </EditorSection>
 
+          <EditorSection title="Artwork & synopsis" description="Poster, trailer and the title summary">
           <div className="form-grid">
             <label title={trailerAvailable ? 'Official poster image URL' : 'Available from Trailer Only status'}>Poster URL {!trailerAvailable && <small>available from Trailer Only</small>}<input disabled={!trailerAvailable} type="url" value={form.posterUrl} onChange={(event) => update('posterUrl', event.target.value)} /></label>
             <label title={trailerAvailable ? 'Official trailer URL' : 'Available after a trailer has been released'}>Trailer URL {!trailerAvailable && <small>not released</small>}<input disabled={!trailerAvailable} type="url" value={form.trailerUrl} onChange={(event) => update('trailerUrl', event.target.value)} placeholder={trailerAvailable ? 'https://youtube.com/…' : 'Available from Trailer Only status'} /></label>
             <label className="span-two">Summary<textarea rows="5" value={form.summary} onChange={(event) => update('summary', event.target.value)} /></label>
           </div>
+          </EditorSection>
 
-          {form.type === 'movie' && <fieldset className="series-editor" disabled={!form.releaseDate} title={form.releaseDate ? 'Add a date to mark this movie watched; remove every date to return it to Not Watched' : 'Add the release date before recording a viewing'}><legend>Watch timeline · viewing status is calculated</legend><button type="button" title="Add a viewing date; this changes viewing status to Watched" className="secondary-action" onClick={addWatch}><FaPlus /> Add watch date</button>{watchError && <p className="field-error" role="alert">{watchError}</p>}{form.watchHistory.map((entry,index) => <div className="history-row" key={entry.id || index}><BufferedDateInput title="The date this movie was watched" aria-label="Watch date" min={form.releaseDate || undefined} max={today} value={entry.watchedAt} onCommit={(dateValue) => updateWatch(index,dateValue)} /><button type="button" title="Delete only this movie watch record" onClick={() => removeWatch(index)} aria-label="Remove watch date"><FaTrash /></button></div>)}</fieldset>}
+          <EditorSection title="Viewing" description="Watch timeline and the services or formats used">
+          {form.type === 'movie' && <fieldset className="series-editor" disabled={!form.releaseDate} title={form.releaseDate ? 'Add a date to mark this movie watched; remove every date to return it to Not Watched' : 'Add the release date before recording a viewing'}><legend>Watch timeline · viewing status is calculated</legend><button type="button" title="Add a viewing date; this changes viewing status to Watched" className="secondary-action" onClick={addWatch}><FaPlus /> Add watch date</button>{watchError && <p className="field-error" role="alert">{watchError}</p>}{form.watchHistory.map((entry,index) => <div className="history-row" key={entry.id || index}><BufferedDateInput title="The date this movie was watched" aria-label="Watch date" min={form.releaseDate || undefined} max={today} value={entry.watchedAt} onCommit={(dateValue) => updateWatch(index,dateValue)} /><select required title="Required audio language used for this viewing" aria-label="Watched in" value={entry.languageTag || ''} onChange={(event) => update('watchHistory',form.watchHistory.map((item,itemIndex) => itemIndex === index ? { ...item,languageTag:event.target.value } : item))}><option value="">Choose watched-in language · required</option>{languageOptions.map((language) => <option key={language.value} value={language.value}>{language.label}</option>)}</select><button type="button" title="Delete only this movie watch record" onClick={() => removeWatch(index)} aria-label="Remove watch date"><FaTrash /></button></div>)}</fieldset>}
 
           <fieldset className="series-editor source-editor" disabled={!watched} title={watched ? 'Record how and where this title was watched' : 'Available after the title is marked Watched'}><legend>Watching sources{!watched && ' · watched titles only'}</legend><button type="button" className="secondary-action" onClick={addSource}><FaPlus /> Add source</button>{sourceError && <p className="field-error" role="alert">{sourceError}</p>}{form.watchSources.map((source,index) => { const record=typeof source === 'string' ? { method:source,provider:'' } : source; const label=catalogs.watchSources.find((item) => item.id === record.method)?.label || 'selected method'; return <div className="source-input-row" key={`${index}-${record.method}`}><label>Method<select aria-label={`Watching method ${index + 1}`} value={record.method} onChange={(event) => { setSourceError(''); updateSource(index,{ method:event.target.value,provider:event.target.value ? record.provider : '' }); }}><option value="">Choose method</option>{catalogs.watchSources.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>{record.method && <label>Provider <small>optional</small><input aria-label={`Watching provider ${index + 1}`} value={record.provider || ''} onChange={(event) => { setSourceError(''); updateSource(index,{ provider:event.target.value }); }} placeholder={`Specific ${label.toLowerCase()} provider`} /></label>}<button type="button" onClick={() => removeSource(index)} aria-label={`Remove ${label} source`} title={`Remove ${label} source`}><FaTrash /></button></div>; })}</fieldset>
+          </EditorSection>
 
+          {form.type === 'series' && <EditorSection title="Seasons & episodes" description="Add seasons in batches, then open only the episode you need">
           {form.type === 'series' && <fieldset className="series-editor">
             <legend>Seasons and episodes</legend>
             <button type="button" className="secondary-action" title="Add a new season to this series" onClick={addSeason}><FaPlus /> Add season</button>
+            {missingEpisodeWatchLanguages > 0 && <label title="Assign one confirmed audio language only to episode watch records that are currently missing it">Fill {missingEpisodeWatchLanguages} missing watched-in language{missingEpisodeWatchLanguages === 1 ? '' : 's'}<select value="" required onChange={(event) => fillMissingEpisodeWatchLanguages(event.target.value)}><option value="">Choose language</option>{languageOptions.map((language) => <option key={language.value} value={language.value}>{language.label}</option>)}</select></label>}
             {form.seasons.map((season, seasonIndex) => <details className="season-block" key={season.id || seasonIndex}>
               <summary className="season-card-header" title={`Expand or collapse Season ${season.seasonNumber || seasonIndex + 1}`}>
                 <div><span className="eyebrow">SEASON {season.seasonNumber || seasonIndex + 1}</span><strong>{season.title || `Season ${season.seasonNumber || seasonIndex + 1}`}</strong></div>
@@ -314,15 +337,18 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
                   <label title="The complete episode running time in minutes">Runtime<input title={runtimeAvailable ? 'Enter the runtime in minutes' : 'Runtime becomes editable after release'} aria-label="Episode runtime" disabled={!runtimeAvailable} type="number" min="1" placeholder="Minutes" value={episode.duration} onChange={(event) => updateEpisode(seasonIndex,episodeIndex,{ duration:event.target.value })} /></label>
                 </div>
                 <label className="episode-summary" title="A concise synopsis of this episode">Episode summary<textarea title="Enter the episode summary" rows="2" value={episode.summary || ''} onChange={(event) => updateEpisode(seasonIndex,episodeIndex,{ summary:event.target.value })} /></label>
-                <div className="episode-watch-history" title={episode.airDate || season.releaseDate || form.seriesStartDate ? 'Add a date to mark this episode seen; season and series viewing statuses update automatically' : 'Add an episode, season, or series release date before recording a viewing'}><button title="Add a watch date; this episode then counts as seen" disabled={!(episode.airDate || season.releaseDate || form.seriesStartDate)} type="button" onClick={() => addEpisodeWatch(seasonIndex,episodeIndex)}><FaPlus /> Add episode watch</button>{(episode.watchHistory || []).map((entry,watchIndex) => <div className="history-row" key={entry.id || watchIndex}><BufferedDateInput title="The date this episode was watched" aria-label={`Episode ${episode.episodeNumber} watch date`} min={episode.airDate || season.releaseDate || form.seriesStartDate || undefined} max={today} value={entry.watchedAt} onCommit={(dateValue) => updateEpisodeWatch(seasonIndex,episodeIndex,watchIndex,dateValue)} /><button title="Delete only this episode watch record" type="button" onClick={() => removeEpisodeWatch(seasonIndex,episodeIndex,watchIndex)} aria-label="Remove episode watch"><FaTrash /></button></div>)}</div>
+                <div className="episode-watch-history" title={episode.airDate || season.releaseDate || form.seriesStartDate ? 'Add a date to mark this episode seen; season and series viewing statuses update automatically' : 'Add an episode, season, or series release date before recording a viewing'}><button title="Add a watch date; this episode then counts as seen" disabled={!(episode.airDate || season.releaseDate || form.seriesStartDate)} type="button" onClick={() => addEpisodeWatch(seasonIndex,episodeIndex)}><FaPlus /> Add episode watch</button>{(episode.watchHistory || []).map((entry,watchIndex) => <div className="history-row" key={entry.id || watchIndex}><BufferedDateInput title="The date this episode was watched" aria-label={`Episode ${episode.episodeNumber} watch date`} min={episode.airDate || season.releaseDate || form.seriesStartDate || undefined} max={today} value={entry.watchedAt} onCommit={(dateValue) => updateEpisodeWatch(seasonIndex,episodeIndex,watchIndex,dateValue)} /><select required title="Required audio language used for this episode viewing" aria-label={`Episode ${episode.episodeNumber} watched in`} value={entry.languageTag || ''} onChange={(event) => updateEpisode(seasonIndex,episodeIndex,{ watchHistory:(episode.watchHistory || []).map((item,index) => index === watchIndex ? { ...item,languageTag:event.target.value } : item) })}><option value="">Choose watched-in language · required</option>{languageOptions.map((language) => <option key={language.value} value={language.value}>{language.label}</option>)}</select><button title="Delete only this episode watch record" type="button" onClick={() => removeEpisodeWatch(seasonIndex,episodeIndex,watchIndex)} aria-label="Remove episode watch"><FaTrash /></button></div>)}</div>
                 </div>
               </details>)}
               </div>
               </div>
             </details>)}
           </fieldset>}
+          </EditorSection>}
 
+          <EditorSection title="Availability" description={`Links where this ${form.type} can be found`}>
           <fieldset className="series-editor" disabled={!watched} title={watched ? `Links where this ${form.type} can be found` : `Available after the ${form.type} is marked Watched`}><legend>Where to find this {form.type}{!watched && ' · watched titles only'}</legend><button type="button" className="secondary-action" onClick={addLink}><FaPlus /> Add link</button>{form.contentLinks.map((entry,index) => <div className="link-input-row" key={entry.id || index}><input required={watched} aria-label={`${form.type} link`} type="url" placeholder={`https://example.com/${form.type}`} value={entry.url} onChange={(event) => updateLink(index,event.target.value)} /><button type="button" onClick={() => removeLink(index)} aria-label={`Remove ${form.type} link`}><FaTrash /></button></div>)}</fieldset>
+          </EditorSection>
 
           <div className="modal-actions"><button type="button" title="Discard or close without saving" onClick={requestClose}>Cancel</button><button className="primary-action" title={initialData ? 'Validate and save all changes to this entry' : 'Validate and add this entry to the library'} type="submit">{initialData ? 'Save changes' : 'Add to library'}</button></div>
         </form>

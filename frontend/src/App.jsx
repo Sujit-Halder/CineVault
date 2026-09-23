@@ -20,7 +20,7 @@ function App() {
   const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('cinevault-font') || 'modern');
   const [authentication,setAuthentication]=useState({ loading:true,authenticated:false });
 
-  useEffect(() => { axios.get(`${API}/api/auth/status`).then((response) => { if (response.data.csrf) sessionStorage.setItem('cinevault-csrf',response.data.csrf); setAuthentication({ loading:false,authenticated:response.data.authenticated }); }).catch(() => setAuthentication({ loading:false,authenticated:false })); },[]);
+  useEffect(() => { axios.get(`${API}/api/auth/status`).then((response) => { if (response.data.csrf) sessionStorage.setItem('cinevault-csrf',response.data.csrf); setAuthentication({ loading:false,...response.data }); }).catch(() => setAuthentication({ loading:false,authenticated:false,setupRequired:false })); },[]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -30,6 +30,7 @@ function App() {
   }, [theme, fontFamily]);
 
   useEffect(() => {
+    if (!authentication.authenticated) return undefined;
     // Starts one full asset scan for this browser session and refreshes notifications when it finishes.
     let stopped=false;
     let timer;
@@ -45,13 +46,13 @@ function App() {
     };
     axios.post(`${API}/api/v1/session/connect`).then(() => poll()).catch(() => {});
     return () => { stopped=true; window.clearTimeout(timer); };
-  },[]);
+  },[authentication.authenticated]);
 
   if (authentication.loading) return <div className="empty-state">Opening your private library…</div>;
-  if (!authentication.authenticated) return <Login onAuthenticated={() => setAuthentication({ loading:false,authenticated:true })} />;
+  if (!authentication.authenticated) return <Login setupRequired={authentication.setupRequired} onAuthenticated={(result) => setAuthentication({ loading:false,...result })} />;
   return (
     <div className="app-shell">
-      <Header theme={theme} fontFamily={fontFamily} onThemeChange={setTheme} onFontChange={setFontFamily} onNavigate={setSelectedMenu} selectedMenu={selectedMenu} trashSignal={trashSignal} />
+      <Header theme={theme} fontFamily={fontFamily} onThemeChange={setTheme} onFontChange={setFontFamily} onNavigate={setSelectedMenu} selectedMenu={selectedMenu} trashSignal={trashSignal} user={authentication.user} onSignedOut={() => { sessionStorage.removeItem('cinevault-csrf'); setAuthentication({ loading:false,authenticated:false,setupRequired:false }); }} />
       <Navbar menu={setSelectedMenu} onSearch={setSearchTerm} selectedMenu={selectedMenu} notificationSignal={notificationSignal} />
       <main><Content selectedMenu={selectedMenu} searchTerm={searchTerm} onNavigate={setSelectedMenu} onNotificationsChanged={() => setNotificationSignal((value) => value + 1)} onTrashChanged={() => setTrashSignal((value) => value + 1)} /></main>
       <Footer />

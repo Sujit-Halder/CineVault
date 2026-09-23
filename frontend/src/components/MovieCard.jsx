@@ -63,11 +63,13 @@ const MovieCard = ({ movieData, catalogs, trashed = false, onEdit, onDelete, onT
   const ratings = movieData.contentRatings || [];
   const animatedContent=movieData.presentationForms?.some((item) => ['Animation','Anime','Adult Animation','Stop Motion'].includes(item));
   const sourceLabel=(method) => catalogs?.watchSources?.find((source) => source.id === method)?.label || method;
+  const languageLabel=(tag) => catalogs?.languages?.find((language) => language.tag === tag)?.label || tag;
   const tone = ratingTone(ratings);
   const seriesEpisodes=movieData.seasons?.flatMap((season) => season.episodes || []) || [];
   const seriesWatchHistory=seriesEpisodes.flatMap((episode) => episode.watchHistory || []).sort((a,b) => new Date(b.watchedAt) - new Date(a.watchedAt));
   const effectiveWatchHistory=movieData.type === 'series' ? seriesWatchHistory : (movieData.watchHistory || []);
   const latestWatch=effectiveWatchHistory[0]?.watchedAt;
+  const latestWatchLanguage=effectiveWatchHistory[0]?.languageTag ? languageLabel(effectiveWatchHistory[0].languageTag) : '';
   const watchedEpisodes=seriesEpisodes.filter((episode) => episode.watchHistory?.length > 0).length;
   const seriesWatchCount=seriesEpisodes.length > 0 ? Math.min(...seriesEpisodes.map((episode) => episode.watchHistory?.length || 0)) : 0;
   const seriesRuntime=seriesEpisodes.reduce((total,episode) => total + (Number(episode.duration) || 0),0);
@@ -86,10 +88,10 @@ const MovieCard = ({ movieData, catalogs, trashed = false, onEdit, onDelete, onT
         </div>
         <div className="metadata-row">
           {movieData.releaseDate && <span title={`${movieData.type === 'series' ? 'Series' : 'Movie'} release date: ${formatDate(movieData.releaseDate)}`}>{formatDate(movieData.releaseDate)}</span>}
-          {latestWatch && movieData.type === 'movie' && <span title={`${effectiveWatchHistory.length} recorded movie watch${effectiveWatchHistory.length === 1 ? '' : 'es'}; latest at ${new Date(latestWatch).toLocaleString()}`}>Watched {effectiveWatchHistory.length}× · {formatDate(latestWatch)} · {relativeWatchTime(latestWatch)}</span>}
-          {latestWatch && movieData.type === 'series' && <span title={`Latest episode watch: ${new Date(latestWatch).toLocaleString()}`}>Last episode watched {formatDate(latestWatch)} · {relativeWatchTime(latestWatch)}</span>}
+          {latestWatch && movieData.type === 'movie' && <span title={`${effectiveWatchHistory.length} recorded movie watch${effectiveWatchHistory.length === 1 ? '' : 'es'}; latest at ${new Date(latestWatch).toLocaleString()}${latestWatchLanguage ? `; audio language ${latestWatchLanguage}` : ''}`}>Watched {effectiveWatchHistory.length}× · {formatDate(latestWatch)} · {relativeWatchTime(latestWatch)}{latestWatchLanguage && ` · ${latestWatchLanguage}`}</span>}
+          {latestWatch && movieData.type === 'series' && <span title={`Latest episode watch: ${new Date(latestWatch).toLocaleString()}${latestWatchLanguage ? `; audio language ${latestWatchLanguage}` : ''}`}>Last episode watched {formatDate(latestWatch)} · {relativeWatchTime(latestWatch)}{latestWatchLanguage && ` · ${latestWatchLanguage}`}</span>}
           {displayRuntime > 0 && <span title={movieData.type === 'series' ? 'Sum of the runtimes of all existing episodes' : 'Movie runtime'}>{displayRuntime} min</span>}
-          {movieData.language?.map((language) => <span key={language} title={`Language: ${language}`}>{language}</span>)}
+          {movieData.language?.map((language) => <span key={language} title={`Original-production language: ${languageLabel(language)}`}>{languageLabel(language)}</span>)}
           {movieData.countryOfOrigin?.map((country) => <span key={country} title={`Origin country: ${countryName(country)} (${country})`}>{countryName(country)}</span>)}
           {ratings.map((rating, index) => <span title={`${rating.system || 'Official content rating'} · ${rating.territory} ${rating.code}`} key={`${rating.territory}-${rating.code}-${index}`}>{rating.territory} {rating.code}</span>)}
         </div>
