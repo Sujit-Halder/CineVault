@@ -1508,6 +1508,48 @@ function migrateRelationalCredits(database) {
     } catch(error) { database.exec('ROLLBACK'); throw error; }
 }
 
+// Removes verified credit and network projections after rebuilding relational search documents.
+function removeLegacyCreditColumns(database) {
+    const version=46;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    const contentColumns=new Set(database.prepare('PRAGMA table_info(content_items)').all().map((column) => column.name));
+    const episodeColumns=new Set(database.prepare('PRAGMA table_info(episodes)').all().map((column) => column.name));
+    const hasSeriesCredits=Boolean(database.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='series_credits'").get());
+    const split=(value) => normalizeCommaSeparatedText(value).split(',').map((item) => item.trim()).filter(Boolean); const missing=[];
+    if (contentColumns.has('director') || contentColumns.has('casts')) database.prepare('SELECT id,director,casts FROM content_items').all().forEach((row) => {
+        for (const [column,role] of [['director','Director'],['casts','Cast']]) split(row[column]).forEach((name) => {
+            if (!database.prepare('SELECT 1 FROM content_credits cc JOIN people p ON p.id=cc.person_id WHERE cc.content_id=? AND cc.role=? AND p.name=? COLLATE NOCASE').get(row.id,role,name)) missing.push(`${row.id}:${role}:${name}`);
+        });
+    });
+    if (contentColumns.has('series_network')) database.prepare("SELECT id,series_network FROM content_items WHERE type='series'").all().forEach((row) => split(row.series_network).forEach((name) => {
+        if (!database.prepare('SELECT 1 FROM content_networks cn JOIN networks n ON n.id=cn.network_id WHERE cn.content_id=? AND n.name=? COLLATE NOCASE').get(row.id,name)) missing.push(`${row.id}:Network:${name}`);
+    }));
+    if (episodeColumns.has('director')) database.prepare('SELECT id,director FROM episodes').all().forEach((row) => split(row.director).forEach((name) => {
+        if (!database.prepare("SELECT 1 FROM episode_credits ec JOIN people p ON p.id=ec.person_id WHERE ec.episode_id=? AND ec.role='Director' AND p.name=? COLLATE NOCASE").get(row.id,name)) missing.push(`${row.id}:Episode Director:${name}`);
+    }));
+    if (hasSeriesCredits) database.prepare('SELECT series_id,person_name,role FROM series_credits').all().forEach((row) => {
+        if (!database.prepare('SELECT 1 FROM content_credits cc JOIN people p ON p.id=cc.person_id WHERE cc.content_id=? AND cc.role=? AND p.name=? COLLATE NOCASE').get(row.series_id,row.role,row.person_name)) missing.push(`${row.series_id}:${row.role}:${row.person_name}`);
+    });
+    if (missing.length) throw new Error(`Relational credit parity failed for ${missing.length} values; legacy columns were not removed`);
+    const backup=createBackup(database,'pre-credit-column-removal');
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        database.exec('DROP TRIGGER IF EXISTS content_search_insert; DROP TRIGGER IF EXISTS content_search_update; DROP TRIGGER IF EXISTS content_search_delete;');
+        for (const column of ['series_network','director','casts']) if (contentColumns.has(column)) database.exec(`ALTER TABLE content_items DROP COLUMN ${column}`);
+        if (episodeColumns.has('director')) database.exec('ALTER TABLE episodes DROP COLUMN director');
+        if (hasSeriesCredits) database.exec('DROP TABLE series_credits');
+        database.exec(`DELETE FROM content_search;
+            INSERT INTO content_search(content_id,title,original_title,director,casts,production_company,summary)
+            SELECT c.id,c.title,c.original_title,
+                COALESCE((SELECT group_concat(name, ', ') FROM (SELECT p.name FROM content_credits cc JOIN people p ON p.id=cc.person_id WHERE cc.content_id=c.id AND cc.role='Director' ORDER BY cc.display_order)),''),
+                COALESCE((SELECT group_concat(name, ', ') FROM (SELECT p.name FROM content_credits cc JOIN people p ON p.id=cc.person_id WHERE cc.content_id=c.id AND cc.role='Cast' ORDER BY cc.display_order)),''),
+                COALESCE((SELECT group_concat(name, ', ') FROM (SELECT pc.name FROM content_production_companies cpc JOIN production_companies pc ON pc.id=cpc.company_id WHERE cpc.content_id=c.id ORDER BY pc.name COLLATE NOCASE)),''),c.summary FROM content_items c;
+            CREATE TRIGGER content_search_delete AFTER DELETE ON content_items BEGIN DELETE FROM content_search WHERE content_id=old.id; END;`);
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString()); database.exec('COMMIT');
+        return { version,removed:['content_items.series_network','content_items.director','content_items.casts','episodes.director','series_credits'],verified:true,backup:backup ? path.basename(backup) : null };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
 // Creates a verified SQLite snapshot in the rotating backup directory.
 function createBackup(database, label = 'automatic') {
     if (freshInstallation && !startupMigrationsComplete && label.startsWith('pre-')) return null;
@@ -1586,6 +1628,7 @@ const productionStatusDefaultReport = migrateProductionStatusDefaults(database);
 const accountVerificationReport = migrateAccountVerification(database);
 const accountLifecycleReport = migrateAccountLifecycle(database);
 const relationalCreditsReport = migrateRelationalCredits(database);
+const legacyCreditRemovalReport = removeLegacyCreditColumns(database);
 if (freshInstallation) {
     database.prepare("DELETE FROM audit_log WHERE actor='migration'").run();
 } else {
@@ -1631,7 +1674,8 @@ if (productionStatusDefaultReport) logger.event('info','database.migration.compl
 if (accountVerificationReport) logger.event('info','database.migration.completed','Account verification schema added',accountVerificationReport);
 if (accountLifecycleReport) logger.event('info','database.migration.completed','Account lifecycle and security schema added',accountLifecycleReport);
 if (relationalCreditsReport) logger.event('info','database.migration.completed','Relational people, credits, and networks added',relationalCreditsReport);
+if (legacyCreditRemovalReport) logger.event('info','database.migration.completed','Legacy credit and network projections removed',legacyCreditRemovalReport);
 }
 startupMigrationsComplete = true;
 
-module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport,productionStatusDefaultReport,accountVerificationReport,accountLifecycleReport,relationalCreditsReport };
+module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport,productionStatusDefaultReport,accountVerificationReport,accountLifecycleReport,relationalCreditsReport,legacyCreditRemovalReport };

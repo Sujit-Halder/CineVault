@@ -124,9 +124,12 @@ test('a clean installation creates runtime state without migration artifacts',()
     assert.doesNotMatch(result.stdout,/database\.migration\.completed/);
     assert.deepEqual(fs.readdirSync(cleanDirectory),['movie-tracker.sqlite']);
     const cleanDatabase=new DatabaseSync(path.join(cleanDirectory,'movie-tracker.sqlite'),{ readOnly:true });
-    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,45);
+    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,46);
     assert.ok(cleanDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_deletion_challenges'").get());
     for (const table of ['people','content_credits','episode_credits','networks','content_networks']) assert.ok(cleanDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
+    assert.equal(cleanDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='series_credits'").get(),undefined);
+    assert.deepEqual(cleanDatabase.prepare('PRAGMA table_info(content_items)').all().filter((column) => ['director','casts','series_network'].includes(column.name)),[]);
+    assert.deepEqual(cleanDatabase.prepare('PRAGMA table_info(episodes)').all().filter((column) => column.name === 'director'),[]);
     assert.equal(cleanDatabase.prepare('PRAGMA table_info(content_items)').all().find((column) => column.name === 'production_status').dflt_value,"'Announced'");
     assert.equal(cleanDatabase.prepare('PRAGMA table_info(seasons)').all().find((column) => column.name === 'production_status').dflt_value,"'Announced'");
     assert.equal(cleanDatabase.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
@@ -360,6 +363,7 @@ test('production companies store full names and retain submitted aliases',() => 
 });
 
 test('episode histories drive series completion, rewatches, and viewing minutes',() => {
+    const minutesBefore=Model.getStatistics().summary.totalMinutesWatched;
     const series = Model.addContent(payload({
         type:'series',subtype:'Limited Series',title:'Measured series',duration:'',productionStatus:'Completed',releaseStatus:'Airing',watchHistory:[],seriesStartDate:'2025-02-01',
         seasons:[{ seasonNumber:1,title:'One',episodes:[
@@ -383,7 +387,7 @@ test('episode histories drive series completion, rewatches, and viewing minutes'
     assert.equal(statistics.summary.completedSeasons,1);
     assert.equal(statistics.summary.completedSeries,1);
     assert.equal(statistics.summary.partiallyWatchedSeries,0);
-    assert.equal(statistics.summary.totalMinutesWatched,330);
+    assert.equal(statistics.summary.totalMinutesWatched-minutesBefore,130);
     assert.equal(Model.buildExportPayload().episodeWatchHistory.length,3);
 });
 

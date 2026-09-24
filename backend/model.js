@@ -35,8 +35,16 @@ function viewingStatus(type,watchHistory=[],seasons=[]) {
 
 // Returns ordered whole-series creative and production credits.
 function getSeriesCredits(seriesId) {
-    return database.prepare('SELECT id,person_name,role FROM series_credits WHERE series_id=? ORDER BY display_order,person_name COLLATE NOCASE').all(seriesId)
-        .map((row) => ({ id:row.id,name:row.person_name,role:row.role }));
+    return database.prepare(`SELECT p.id,p.name,c.role FROM content_credits c JOIN people p ON p.id=c.person_id
+        WHERE c.content_id=? AND c.role NOT IN ('Director','Cast') ORDER BY c.display_order,p.name COLLATE NOCASE`).all(seriesId);
+}
+
+// Loads relational title people and networks as the public compatibility projection.
+function getRelationalCredits(contentId) {
+    const rows=database.prepare(`SELECT p.name,c.role FROM content_credits c JOIN people p ON p.id=c.person_id WHERE c.content_id=? ORDER BY c.display_order,p.name COLLATE NOCASE`).all(contentId);
+    const names=(role) => rows.filter((row) => row.role === role).map((row) => row.name).join(', ');
+    const networks=database.prepare(`SELECT n.name FROM content_networks cn JOIN networks n ON n.id=cn.network_id WHERE cn.content_id=? ORDER BY cn.display_order,n.name COLLATE NOCASE`).all(contentId).map((row) => row.name).join(', ');
+    return { director:names('Director'),casts:names('Cast'),seriesNetwork:networks };
 }
 
 // Loads normalized repeatable metadata for a set of content records using relational queries only.
@@ -58,12 +66,13 @@ function getRelationalMetadata(contentIds=[]) {
 function mapContentRow(row,related = {}) {
     if (!row) return null;
     const metadata=related.metadata || getRelationalMetadata([row.id]).get(row.id);
+    const relational=related.relationalCredits || getRelationalCredits(row.id);
     return {
         id: row.id, type: row.type, subtype: row.subtype, title: row.title, originalTitle: row.original_title,
         productionStatus:row.production_status || 'Announced',releaseStatus:row.release_status || 'Unscheduled', releaseDate: row.release_date || '', watchDate: row.latest_watch_date || '',
         seriesStartDate:row.series_start_date || '',seriesEndDate:row.series_end_date || '',seriesContinuing:Boolean(row.series_continuing),
-        seriesNetwork:row.series_network || '',
-        duration: row.runtime_minutes == null ? '' : String(row.runtime_minutes), director: row.director, casts: row.casts,
+        seriesNetwork:relational.seriesNetwork,
+        duration: row.runtime_minutes == null ? '' : String(row.runtime_minutes), director:relational.director, casts:relational.casts,
         rating: row.personal_rating, productionCompany: row.production_company,
         productionCompanies:related.productionCompanies ?? getProductionCompanyNames(row.id),posterUrl: row.poster_url,
         trailerUrl: row.trailer_url, summary: row.summary,
@@ -85,6 +94,7 @@ function hydrateContentRows(rows) {
     const links=new Map(rows.map((row) => [row.id,[]]));
     const companies=new Map(rows.map((row) => [row.id,[]]));
     const credits=new Map(rows.map((row) => [row.id,[]]));
+    const relationalCredits=new Map(rows.map((row) => [row.id,{ director:[],casts:[],seriesNetwork:[] }]));
     const metadata=getRelationalMetadata(rows.map((row) => row.id));
     const seriesStructures=getSeriesStructures(rows.filter((row) => row.type === 'series').map((row) => row.id));
     database.prepare(`SELECT id,content_id,watched_at,language_tag FROM watch_history WHERE content_id IN (${placeholders}) ORDER BY watched_at DESC`).all(...rows.map((row) => row.id))
@@ -94,10 +104,11 @@ function hydrateContentRows(rows) {
     database.prepare(`SELECT cpc.content_id,pc.name FROM content_production_companies cpc JOIN production_companies pc ON pc.id=cpc.company_id
         WHERE cpc.content_id IN (${placeholders}) ORDER BY pc.name COLLATE NOCASE`).all(...rows.map((row) => row.id))
         .forEach((row) => companies.get(row.content_id).push(row.name));
-    database.prepare(`SELECT series_id,id,person_name,role FROM series_credits WHERE series_id IN (${placeholders}) ORDER BY display_order,person_name COLLATE NOCASE`).all(...rows.map((row) => row.id))
-        .forEach((row) => credits.get(row.series_id).push({ id:row.id,name:row.person_name,role:row.role }));
+    database.prepare(`SELECT cc.content_id,p.id,p.name,cc.role FROM content_credits cc JOIN people p ON p.id=cc.person_id WHERE cc.content_id IN (${placeholders}) ORDER BY cc.display_order,p.name COLLATE NOCASE`).all(...rows.map((row) => row.id))
+        .forEach((credit) => { const target=relationalCredits.get(credit.content_id); if (credit.role === 'Director') target.director.push(credit.name); else if (credit.role === 'Cast') target.casts.push(credit.name); else credits.get(credit.content_id).push({ id:credit.id,name:credit.name,role:credit.role }); });
+    database.prepare(`SELECT cn.content_id,n.name FROM content_networks cn JOIN networks n ON n.id=cn.network_id WHERE cn.content_id IN (${placeholders}) ORDER BY cn.display_order,n.name COLLATE NOCASE`).all(...rows.map((row) => row.id)).forEach((network) => relationalCredits.get(network.content_id).seriesNetwork.push(network.name));
     return rows.map((row) => mapContentRow(row,{ watchHistory:histories.get(row.id),contentLinks:links.get(row.id),
-        productionCompanies:companies.get(row.id),seriesCredits:credits.get(row.id),metadata:metadata.get(row.id),seasons:row.type === 'series' ? seriesStructures.get(row.id) || [] : undefined }));
+        productionCompanies:companies.get(row.id),seriesCredits:credits.get(row.id),relationalCredits:Object.fromEntries(Object.entries(relationalCredits.get(row.id)).map(([key,value]) => [key,value.join(', ')])),metadata:metadata.get(row.id),seasons:row.type === 'series' ? seriesStructures.get(row.id) || [] : undefined }));
 }
 
 // Normalizes a title for duplicate comparison.
@@ -312,8 +323,8 @@ function normalizePayload(payload, existing = {}) {
 
 // Returns values in the order used by content insert statements.
 function persistenceValues(item) {
-    return [item.id,item.type,item.subtype,item.title,item.originalTitle,item.productionStatus,item.releaseStatus,item.releaseDate,item.seriesStartDate,item.seriesEndDate,item.seriesContinuing ? 1 : 0,item.seriesNetwork,item.duration,
-        item.director,item.casts,item.rating,item.productionCompany,item.posterUrl,item.trailerUrl,item.summary,
+    return [item.id,item.type,item.subtype,item.title,item.originalTitle,item.productionStatus,item.releaseStatus,item.releaseDate,item.seriesStartDate,item.seriesEndDate,item.seriesContinuing ? 1 : 0,item.duration,
+        item.rating,item.productionCompany,item.posterUrl,item.trailerUrl,item.summary,
         item.favorite ? 1 : 0,item.creation,item.modification];
 }
 
@@ -380,7 +391,8 @@ function getContent(query = {}) {
         const terms=String(query.search).match(/[\p{L}\p{N}]+/gu) || [];
         if (terms.length) {
             clauses.push(`(id IN (SELECT content_id FROM content_search WHERE content_search MATCH ?)
-                OR EXISTS(SELECT 1 FROM series_credits sc WHERE sc.series_id=content_items.id AND (sc.person_name LIKE ? OR sc.role LIKE ?)))`);
+                OR EXISTS(SELECT 1 FROM content_credits cc JOIN people p ON p.id=cc.person_id
+                    WHERE cc.content_id=content_items.id AND (p.name LIKE ? OR cc.role LIKE ?)))`);
             parameters.push(terms.map((term) => `"${term}"*`).join(' AND '),`%${String(query.search).trim()}%`,`%${String(query.search).trim()}%`);
         }
     }
@@ -538,10 +550,13 @@ function getSeriesStructures(seriesIds=[]) {
     const seasonIds=seasons.map((season) => season.id); const seasonPlaceholders=seasonIds.map(() => '?').join(',');
     const episodes=database.prepare(`SELECT * FROM episodes WHERE season_id IN (${seasonPlaceholders}) ORDER BY season_id,episode_number`).all(...seasonIds);
     const histories=new Map(episodes.map((episode) => [episode.id,[]]));
+    const directors=new Map(episodes.map((episode) => [episode.id,[]]));
     if (episodes.length) {
         const episodePlaceholders=episodes.map(() => '?').join(',');
         database.prepare(`SELECT id,episode_id,watched_at,language_tag FROM episode_watch_history WHERE episode_id IN (${episodePlaceholders}) ORDER BY watched_at DESC`).all(...episodes.map((episode) => episode.id))
             .forEach((row) => histories.get(row.episode_id).push({ id:row.id,watchedAt:row.watched_at,languageTag:row.language_tag || '' }));
+        database.prepare(`SELECT ec.episode_id,p.name FROM episode_credits ec JOIN people p ON p.id=ec.person_id WHERE ec.episode_id IN (${episodePlaceholders}) AND ec.role='Director' ORDER BY ec.display_order,p.name COLLATE NOCASE`).all(...episodes.map((episode) => episode.id))
+            .forEach((row) => directors.get(row.episode_id).push(row.name));
     }
     const episodesBySeason=new Map(seasonIds.map((id) => [id,[]]));
     episodes.forEach((episode) => {
@@ -549,7 +564,7 @@ function getSeriesStructures(seriesIds=[]) {
         episodesBySeason.get(episode.season_id).push({ id:episode.id,episodeNumber:episode.episode_number,title:episode.title,airDate:episode.air_date || '',
             duration:episode.runtime_minutes == null ? '' : String(episode.runtime_minutes),watched:watchHistory.length > 0,
             watchDate:watchHistory[0]?.watchedAt || '',progressSeconds:episode.progress_seconds,summary:episode.summary,
-            episodeType:episode.episode_type || 'Regular',director:episode.director || '',watchHistory });
+            episodeType:episode.episode_type || 'Regular',director:directors.get(episode.id).join(', '),watchHistory });
     });
     seasons.forEach((season) => {
         const seasonEpisodes=episodesBySeason.get(season.id) || [];
@@ -591,12 +606,16 @@ function replaceSeriesStructure(seriesId, seasons = []) {
             })).filter((entry) => entry.watchedAt && !Number.isNaN(Date.parse(entry.watchedAt)));
             const episodeType=EPISODE_TYPES.includes(episode.episodeType) ? episode.episodeType : 'Regular';
             database.prepare(`INSERT INTO episodes(id,season_id,episode_number,title,air_date,runtime_minutes,watched,watch_date,
-                progress_seconds,summary,episode_type,director,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+                progress_seconds,summary,episode_type,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
                 episodeId,seasonId,episodeNumber,
                 normalizeSingleLineText(episode.title) || `Episode ${episodeNumber}`,String(episode.airDate || '').trim() || null,
                 episode.duration === '' || episode.duration == null ? null : Number(episode.duration),episodeHistory.length ? 1 : 0,
-                episodeHistory[0]?.watchedAt || null,Number(episode.progressSeconds) || 0,normalizeMultilineText(episode.summary),episodeType,
-                normalizeCommaSeparatedText(episode.director),now,now);
+                episodeHistory[0]?.watchedAt || null,Number(episode.progressSeconds) || 0,normalizeMultilineText(episode.summary),episodeType,now,now);
+            normalizeCommaSeparatedText(episode.director).split(',').map((name) => name.trim()).filter(Boolean).forEach((name,index) => {
+                let person=database.prepare('SELECT id FROM people WHERE name=? COLLATE NOCASE').get(name);
+                if (!person) { person={ id:crypto.randomUUID() }; database.prepare('INSERT INTO people(id,name,canonical_name,created_at) VALUES(?,?,?,?)').run(person.id,name,canonicalValueKey(name),now); }
+                database.prepare("INSERT OR IGNORE INTO episode_credits(episode_id,person_id,role,display_order) VALUES(?,?, 'Director',?)").run(episodeId,person.id,index);
+            });
             const insertWatch = database.prepare('INSERT INTO episode_watch_history(id,episode_id,watched_at,language_tag,created_at,updated_at) VALUES(?,?,?,?,?,?)');
             episodeHistory.forEach((entry) => insertWatch.run(entry.id,episodeId,entry.watchedAt,entry.languageTag,now,now));
         });
@@ -609,6 +628,40 @@ function replaceSeriesCredits(seriesId,credits=[]) {
     const now=new Date().toISOString();
     const insert=database.prepare('INSERT INTO series_credits(id,series_id,person_name,role,display_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?)');
     credits.forEach((credit,index) => insert.run(credit.id || crypto.randomUUID(),seriesId,credit.name,credit.role,index,now,now));
+}
+
+// Replaces normalized title credits and networks while retaining temporary rollback projections.
+function replaceRelationalCredits(contentId,item) {
+    database.prepare('DELETE FROM content_credits WHERE content_id=?').run(contentId);
+    database.prepare('DELETE FROM content_networks WHERE content_id=?').run(contentId);
+    const now=new Date().toISOString();
+    const person=(name) => {
+        const normalized=normalizeSingleLineText(name); const existing=database.prepare('SELECT id FROM people WHERE name=? COLLATE NOCASE').get(normalized);
+        if (existing) return existing.id;
+        const id=crypto.randomUUID(); database.prepare('INSERT INTO people(id,name,canonical_name,created_at) VALUES(?,?,?,?)').run(id,normalized,canonicalValueKey(normalized),now); return id;
+    };
+    const insert=database.prepare('INSERT OR IGNORE INTO content_credits(content_id,person_id,role,display_order) VALUES(?,?,?,?)');
+    const add=(value,role,offset=0) => normalizeCommaSeparatedText(value).split(',').map((name) => name.trim()).filter(Boolean).forEach((name,index) => insert.run(contentId,person(name),role,offset+index));
+    add(item.director,'Director'); add(item.casts,'Cast');
+    (item.seriesCredits || []).forEach((credit,index) => insert.run(contentId,person(credit.name),credit.role,index));
+    if (item.type === 'series') normalizeCommaSeparatedText(item.seriesNetwork).split(',').map((name) => name.trim()).filter(Boolean).forEach((name,index) => {
+        let network=database.prepare('SELECT id FROM networks WHERE name=? COLLATE NOCASE').get(name);
+        if (!network) { network={ id:crypto.randomUUID() }; database.prepare('INSERT INTO networks(id,name,canonical_name,created_at) VALUES(?,?,?,?)').run(network.id,name,canonicalValueKey(name),now); }
+        database.prepare('INSERT INTO content_networks(content_id,network_id,display_order) VALUES(?,?,?)').run(contentId,network.id,index);
+    });
+}
+
+// Rebuilds one full-text document from relational credits and companies.
+function refreshContentSearch(contentId) {
+    database.prepare('DELETE FROM content_search WHERE content_id=?').run(contentId);
+    const row=database.prepare('SELECT id,title,original_title,summary FROM content_items WHERE id=?').get(contentId);
+    if (!row) return;
+    const names=(role) => database.prepare(`SELECT p.name FROM content_credits cc JOIN people p ON p.id=cc.person_id
+        WHERE cc.content_id=? AND cc.role=? ORDER BY cc.display_order`).all(contentId,role).map((item) => item.name).join(', ');
+    const companies=database.prepare(`SELECT pc.name FROM content_production_companies cpc JOIN production_companies pc ON pc.id=cpc.company_id
+        WHERE cpc.content_id=? ORDER BY pc.name COLLATE NOCASE`).all(contentId).map((item) => item.name).join(', ');
+    database.prepare('INSERT INTO content_search(content_id,title,original_title,director,casts,production_company,summary) VALUES(?,?,?,?,?,?,?)')
+        .run(row.id,row.title,row.original_title,names('Director'),names('Cast'),companies,row.summary);
 }
 
 // Synchronizes normalized metadata relations used for exact querying and future schema evolution.
@@ -684,15 +737,17 @@ function addContent(payload, context = {}) {
         .get(normalizeTitle(item.title),item.releaseDate || '',item.type,...ownership.parameters);
     if (duplicate) throw Object.assign(new Error('A title with this release date already exists'), { status: 409 });
     runTransaction(() => {
-        database.prepare(`INSERT INTO content_items (id,type,subtype,title,original_title,production_status,release_status,release_date,series_start_date,series_end_date,series_continuing,series_network,runtime_minutes,
-            director,casts,personal_rating,production_company,poster_url,trailer_url,summary,favorite,created_at,updated_at,owner_user_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...persistenceValues(item),ownership.userId);
+        database.prepare(`INSERT INTO content_items (id,type,subtype,title,original_title,production_status,release_status,release_date,series_start_date,series_end_date,series_continuing,runtime_minutes,
+            personal_rating,production_company,poster_url,trailer_url,summary,favorite,created_at,updated_at,owner_user_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...persistenceValues(item),ownership.userId);
         if (ownership.userId) database.prepare(`INSERT INTO library_entries(id,user_id,content_id,personal_rating,favorite,created_at,updated_at,deleted_at)
             VALUES(?,?,?,?,?,?,?,NULL)`).run(crypto.randomUUID(),ownership.userId,item.id,item.rating || null,item.favorite ? 1 : 0,item.creation,item.modification);
-        if (item.type === 'series') { replaceSeriesStructure(item.id, item.seasons); replaceSeriesCredits(item.id,item.seriesCredits); }
+        if (item.type === 'series') replaceSeriesStructure(item.id, item.seasons);
         replaceWatchData(item.id,item.watchHistory,item.contentLinks);
         replaceProductionCompanies(item.id,item.productionCompanies,item.productionCompanyAliases);
         replaceRelationalMetadata(item.id,item);
+        replaceRelationalCredits(item.id,item);
+        refreshContentSearch(item.id);
         writeAudit('create', 'content', item.id, { title:item.title,type:item.type }, { ...context, after:item });
     });
     return getById(item.id);
@@ -717,13 +772,15 @@ function updateContent(payload, context = {}) {
     if (duplicate) throw Object.assign(new Error('Another title with this release date already exists'),{ status:409 });
     const values = persistenceValues(item);
     runTransaction(() => {
-        database.prepare(`UPDATE content_items SET type=?,subtype=?,title=?,original_title=?,production_status=?,release_status=?,release_date=?,series_start_date=?,series_end_date=?,series_continuing=?,series_network=?,runtime_minutes=?,
-            director=?,casts=?,personal_rating=?,production_company=?,poster_url=?,trailer_url=?,summary=?,favorite=?,updated_at=? WHERE id=?`)
-            .run(...values.slice(1,21),item.modification,item.id);
-        if (item.type === 'series') { replaceSeriesStructure(item.id, item.seasons); replaceSeriesCredits(item.id,item.seriesCredits); }
+        database.prepare(`UPDATE content_items SET type=?,subtype=?,title=?,original_title=?,production_status=?,release_status=?,release_date=?,series_start_date=?,series_end_date=?,series_continuing=?,runtime_minutes=?,
+            personal_rating=?,production_company=?,poster_url=?,trailer_url=?,summary=?,favorite=?,updated_at=? WHERE id=?`)
+            .run(...values.slice(1,18),item.modification,item.id);
+        if (item.type === 'series') replaceSeriesStructure(item.id, item.seasons);
         replaceWatchData(item.id,item.watchHistory,item.contentLinks);
         replaceProductionCompanies(item.id,item.productionCompanies,item.productionCompanyAliases);
         replaceRelationalMetadata(item.id,item);
+        replaceRelationalCredits(item.id,item);
+        refreshContentSearch(item.id);
         if (ownership.userId) database.prepare('UPDATE library_entries SET personal_rating=?,favorite=?,updated_at=?,deleted_at=NULL WHERE user_id=? AND content_id=?')
             .run(item.rating || null,item.favorite ? 1 : 0,item.modification,ownership.userId,item.id);
         resolveAssetNotifications(item.id, item.posterUrl, item.trailerUrl);
@@ -913,7 +970,8 @@ function buildExportPayload(options={}) {
         watchHistory:database.prepare(`SELECT * FROM watch_history WHERE content_id IN (${placeholders}) ORDER BY watched_at`).all(...ids),
         episodeWatchHistory:episodeIds.length ? database.prepare(`SELECT * FROM episode_watch_history WHERE episode_id IN (${episodePlaceholders}) ORDER BY watched_at`).all(...episodeIds) : [],
         contentLinks:database.prepare(`SELECT * FROM content_links WHERE content_id IN (${placeholders}) ORDER BY domain,url`).all(...ids),
-        seriesCredits:database.prepare(`SELECT * FROM series_credits WHERE series_id IN (${placeholders}) ORDER BY series_id,display_order`).all(...ids) };
+        seriesCredits:database.prepare(`SELECT cc.content_id series_id,p.name person_name,cc.role,cc.display_order FROM content_credits cc JOIN people p ON p.id=cc.person_id
+            WHERE cc.content_id IN (${placeholders}) AND cc.role NOT IN ('Director','Cast') ORDER BY cc.content_id,cc.display_order`).all(...ids) };
 }
 
 // Builds aggregate library statistics without sending the full collection to the browser.
@@ -1053,7 +1111,7 @@ function getDataHealth() {
         FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql} GROUP BY type,lower(trim(title)),ifnull(release_date,'') HAVING COUNT(*)>1 ORDER BY count DESC LIMIT 100`).all(...ownership.parameters)
         .map((row) => ({ ...row,items:row.ids.split(String.fromCharCode(31)).map((id,index) => ({ id,title:row.titles.split(String.fromCharCode(31))[index] })) })) };
     results.duplicateTitles.count=results.duplicateTitles.items.length;
-    const activeRows=database.prepare(`SELECT id,title,type,release_status,release_date,series_end_date,series_network,poster_url,trailer_url FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql}`).all(...ownership.parameters);
+    const activeRows=database.prepare(`SELECT id,title,type,release_status,release_date,series_end_date,poster_url,trailer_url FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql}`).all(...ownership.parameters);
     const healthMetadata=getRelationalMetadata(activeRows.map((row) => row.id));
     const urlIssues=[]; const unrated=[]; const unrecognized=[]; const lifecycleIssues=[]; const sourceIssues=[];
     const catalogs=getCatalogs();
@@ -1099,7 +1157,9 @@ function getDataHealth() {
     ) missing ON missing.content_id=c.id OR missing.series_id=c.id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql} GROUP BY c.id,c.title ORDER BY c.title COLLATE NOCASE`).all(...joinedOwnership.parameters);
     results.missingWatchLanguages={ label:'Titles with watch records missing a language',count:missingWatchLanguages.length,items:missingWatchLanguages };
     const validCreditRoles=new Set(['Creator','Co-Creator','Developer','Showrunner','Executive Producer','Producer','Head Writer','Series Director','Original Work Creator','Other']);
-    const creditIssues=database.prepare(`SELECT c.id,c.title,sc.person_name,sc.role FROM series_credits sc JOIN content_items c ON c.id=sc.series_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}`).all(...joinedOwnership.parameters)
+    const creditIssues=database.prepare(`SELECT c.id,c.title,p.name person_name,cc.role FROM content_credits cc JOIN people p ON p.id=cc.person_id
+        JOIN content_items c ON c.id=cc.content_id WHERE c.type='series' AND c.deleted_at IS NULL AND ${joinedOwnership.sql}
+        AND cc.role NOT IN ('Director','Cast')`).all(...joinedOwnership.parameters)
         .filter((credit) => !validCreditRoles.has(credit.role));
     results.unrecognizedSeriesCredits=resultList('Series credits with unrecognized roles',creditIssues);
     const canonicalGroups=[];
@@ -1115,8 +1175,11 @@ function getDataHealth() {
         groups.forEach((variants,key) => { if (variants.size > 1) canonicalGroups.push({ category,label,key,variants:[...variants.values()].sort((a,b) => b.count-a.count || a.value.localeCompare(b.value)),preferred:[...variants.values()].sort((a,b) => b.count-a.count)[0].value }); });
     };
     collectVariants('watchProvider','Watching-source providers',activeRows.flatMap((row) => healthMetadata.get(row.id).watchSources.filter((source) => source.provider).map((source) => ({ id:row.id,title:row.title,value:source.provider }))));
-    collectVariants('network','Series networks',activeRows.filter((row) => row.type === 'series').flatMap((row) => String(row.series_network || '').split(',').map((value) => ({ id:row.id,title:row.title,value }))));
-    collectVariants('creditName','Series-credit names',database.prepare(`SELECT c.id,c.title,sc.person_name value FROM series_credits sc JOIN content_items c ON c.id=sc.series_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}`).all(...joinedOwnership.parameters));
+    collectVariants('network','Series networks',database.prepare(`SELECT c.id,c.title,n.name value FROM content_networks cn JOIN networks n ON n.id=cn.network_id
+        JOIN content_items c ON c.id=cn.content_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}`).all(...joinedOwnership.parameters));
+    collectVariants('creditName','Series-credit names',database.prepare(`SELECT c.id,c.title,p.name value FROM content_credits cc JOIN people p ON p.id=cc.person_id
+        JOIN content_items c ON c.id=cc.content_id WHERE c.type='series' AND c.deleted_at IS NULL AND ${joinedOwnership.sql}
+        AND cc.role NOT IN ('Director','Cast')`).all(...joinedOwnership.parameters));
     results.canonicalSuggestions=canonicalGroups;
     const companies=database.prepare(`SELECT pc.id,pc.name,pc.canonical_name,COUNT(DISTINCT cpc.content_id) uses
         FROM production_companies pc LEFT JOIN content_production_companies cpc ON cpc.company_id=pc.id
@@ -1149,11 +1212,35 @@ function mergeCanonicalValues(payload,context={}) {
             normalized.forEach((source,index) => insert.run(crypto.randomUUID(),row.id,source.method,source.provider || '',index));
             database.prepare('UPDATE content_items SET updated_at=? WHERE id=?').run(now,row.id); updated += 1;
         });
-        if (category === 'network') database.prepare("SELECT id,series_network FROM content_items WHERE type='series' AND deleted_at IS NULL").all().forEach((row) => {
-            const values=String(row.series_network || '').split(',').map(normalizeSingleLineText).filter(Boolean); const replaced=values.map((value) => selected.has(value.toLocaleLowerCase()) ? preferred : value);
-            if (replaced.some((value,index) => value !== values[index])) { database.prepare('UPDATE content_items SET series_network=?,updated_at=? WHERE id=?').run(normalizeCommaSeparatedText(replaced.join(',')),now,row.id); updated += 1; }
-        });
-        if (category === 'creditName') { const placeholders=variants.map(() => '?').join(','); updated=database.prepare(`UPDATE series_credits SET person_name=?,updated_at=? WHERE lower(person_name) IN (${placeholders})`).run(preferred,now,...variants.map((value) => value.toLocaleLowerCase())).changes; }
+        if (category === 'network') {
+            let target=database.prepare('SELECT id FROM networks WHERE name=? COLLATE NOCASE').get(preferred);
+            if (!target) { target={ id:crypto.randomUUID() }; database.prepare('INSERT INTO networks(id,name,canonical_name,created_at) VALUES(?,?,?,?)').run(target.id,preferred,canonicalValueKey(preferred),now); }
+            const matches=database.prepare(`SELECT id FROM networks WHERE lower(name) IN (${variants.map(() => '?').join(',')})`).all(...variants.map((value) => value.toLocaleLowerCase()));
+            matches.forEach(({ id }) => {
+                if (id === target.id) return;
+                const links=database.prepare('SELECT content_id,display_order FROM content_networks WHERE network_id=?').all(id);
+                links.forEach((link) => { database.prepare('INSERT OR IGNORE INTO content_networks(content_id,network_id,display_order) VALUES(?,?,?)').run(link.content_id,target.id,link.display_order); updated += 1; });
+                database.prepare('DELETE FROM content_networks WHERE network_id=?').run(id); database.prepare('DELETE FROM networks WHERE id=?').run(id);
+            });
+            database.prepare('UPDATE networks SET name=?,canonical_name=? WHERE id=?').run(preferred,canonicalValueKey(preferred),target.id);
+            database.prepare(`UPDATE content_items SET updated_at=? WHERE id IN (SELECT content_id FROM content_networks WHERE network_id=?)`).run(now,target.id);
+        }
+        if (category === 'creditName') {
+            let target=database.prepare('SELECT id FROM people WHERE name=? COLLATE NOCASE').get(preferred);
+            if (!target) { target={ id:crypto.randomUUID() }; database.prepare('INSERT INTO people(id,name,canonical_name,created_at) VALUES(?,?,?,?)').run(target.id,preferred,canonicalValueKey(preferred),now); }
+            const matches=database.prepare(`SELECT id FROM people WHERE lower(name) IN (${variants.map(() => '?').join(',')})`).all(...variants.map((value) => value.toLocaleLowerCase()));
+            matches.forEach(({ id }) => {
+                if (id === target.id) return;
+                database.prepare('SELECT content_id,role,display_order FROM content_credits WHERE person_id=?').all(id).forEach((link) => {
+                    database.prepare('INSERT OR IGNORE INTO content_credits(content_id,person_id,role,display_order) VALUES(?,?,?,?)').run(link.content_id,target.id,link.role,link.display_order); updated += 1;
+                });
+                database.prepare('SELECT episode_id,role,display_order FROM episode_credits WHERE person_id=?').all(id).forEach((link) => {
+                    database.prepare('INSERT OR IGNORE INTO episode_credits(episode_id,person_id,role,display_order) VALUES(?,?,?,?)').run(link.episode_id,target.id,link.role,link.display_order); updated += 1;
+                });
+                database.prepare('DELETE FROM content_credits WHERE person_id=?').run(id); database.prepare('DELETE FROM episode_credits WHERE person_id=?').run(id); database.prepare('DELETE FROM people WHERE id=?').run(id);
+            });
+            database.prepare('UPDATE people SET name=?,canonical_name=? WHERE id=?').run(preferred,canonicalValueKey(preferred),target.id);
+        }
         writeAudit('canonical_merge',category,null,{ preferred,variants,updated,backup:path.basename(backupFile) },context);
     });
     return { category,preferred,updated,backupFile };
