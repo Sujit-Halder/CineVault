@@ -11,6 +11,9 @@ const security=require('./security');
 const { runWithAccount }=require('./request-context');
 const Model=require('./model');
 security.setAuditRecorder(Model.recordAudit);
+security.purgeExpiredAccounts();
+const accountPurgeTimer=setInterval(() => security.purgeExpiredAccounts(),6 * 60 * 60 * 1000);
+accountPurgeTimer.unref();
 const app = express();
 const PORT = process.env.PORT;
 const runtimeDataDirectory = process.env.MOVIE_TRACKER_DATA_DIR ? path.resolve(process.env.MOVIE_TRACKER_DATA_DIR) : path.join(__dirname,'data');
@@ -70,9 +73,11 @@ app.use('/api',(_req,res,next) => {
 app.get('/api/auth/status',security.status);
 app.post('/api/auth/setup',security.setup);
 app.post('/api/auth/login',security.login);
+app.post('/api/auth/invitations/verify-email',security.verifyInvitation);
 app.post('/api/auth/signup',security.signup);
 app.post('/api/auth/forgot-password',security.forgotPassword);
 app.post('/api/auth/reset-password',security.resetPassword);
+app.post('/api/auth/mail-delivery',security.mailDeliveryWebhook);
 app.post('/api/auth/logout',security.logout);
 app.post('/api/auth/invitations',security.authentication,security.invite);
 app.use('/api',security.authentication);
@@ -97,7 +102,7 @@ app.listen(PORT, () => {
 
 let shutdownRecorded=false;
 // Records one orderly stop event and removes the maintenance lock.
-function removeServerLock() { try { clearInterval(rateBucketCleanup); if (!shutdownRecorded) { shutdownRecorded=true; Model.recordAudit('system.stopped','system',null,{ reason:'Orderly shutdown' },{ actor:'system' }); } if (fs.existsSync(serverLockFile)) fs.unlinkSync(serverLockFile); } catch {} }
+function removeServerLock() { try { clearInterval(rateBucketCleanup); clearInterval(accountPurgeTimer); if (!shutdownRecorded) { shutdownRecorded=true; Model.recordAudit('system.stopped','system',null,{ reason:'Orderly shutdown' },{ actor:'system' }); } if (fs.existsSync(serverLockFile)) fs.unlinkSync(serverLockFile); } catch {} }
 process.once('exit',removeServerLock);
 process.once('SIGINT',() => { removeServerLock(); process.exit(0); });
 process.once('SIGTERM',() => { removeServerLock(); process.exit(0); });

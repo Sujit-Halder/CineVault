@@ -1,5 +1,6 @@
 const express = require('express');
 const controller = require('./controller');
+const security = require('./security');
 
 const router = express.Router();
 
@@ -10,6 +11,7 @@ router.delete('/movie', controller.deleteMovie);
 router.patch('/movie', controller.toggleFavorite);
 
 router.get('/v1/content', controller.getContent);
+router.get('/v1/anniversaries',controller.getReleaseAnniversaries);
 router.get('/v1/content/:id', controller.getContentById);
 router.post('/v1/content', controller.addMovie);
 router.put('/v1/content/:id', controller.editMovie);
@@ -35,5 +37,13 @@ router.post('/v1/import/preview',controller.previewImport);
 router.post('/v1/import/apply',controller.applyImport);
 router.post('/v1/session/connect', controller.connectClient);
 router.get('/v1/asset-scan', controller.getAssetScanStatus);
+router.post('/v1/account/deletion/request',security.requestAccountDeletion);
+router.post('/v1/account/deletion/confirm',security.confirmAccountDeletion);
+router.post('/v1/account/deletion/finalize',security.finalizeAccountDeletion);
+router.get('/v1/accounts',security.listAccounts);
+router.delete('/v1/accounts/invitations/:id',security.revokeInvitation);
+router.patch('/v1/accounts/:id',security.updateAccount);
+router.post('/v1/accounts/ownership/request',security.requestOwnershipTransfer);
+router.post('/v1/accounts/ownership/confirm',security.confirmOwnershipTransfer);
 
 module.exports = router;

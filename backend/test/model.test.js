@@ -124,7 +124,8 @@ test('a clean installation creates runtime state without migration artifacts',()
     assert.doesNotMatch(result.stdout,/database\.migration\.completed/);
     assert.deepEqual(fs.readdirSync(cleanDirectory),['movie-tracker.sqlite']);
     const cleanDatabase=new DatabaseSync(path.join(cleanDirectory,'movie-tracker.sqlite'),{ readOnly:true });
-    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,42);
+    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,44);
+    assert.ok(cleanDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_deletion_challenges'").get());
     assert.equal(cleanDatabase.prepare('PRAGMA table_info(content_items)').all().find((column) => column.name === 'production_status').dflt_value,"'Announced'");
     assert.equal(cleanDatabase.prepare('PRAGMA table_info(seasons)').all().find((column) => column.name === 'production_status').dflt_value,"'Announced'");
     assert.equal(cleanDatabase.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
@@ -218,6 +219,15 @@ test('movie creation, updating, watch history, filters, and title ordering remai
     assert.ok(watchDateResults.length > 0);
     assert.ok(watchDateResults.every((item) => ['Watched','In Progress','Completed'].includes(item.viewingStatus)));
     assert.equal(watchDateResults.some((item) => item.title === '9 Numeric' || item.title === '! Symbol' || item.title === 'Zulu'),false);
+});
+
+test('release anniversaries include only maintained milestone years',() => {
+    const milestone=Model.addContent(payload({ title:'Five year milestone',releaseDate:'2021-09-24' }));
+    Model.addContent(payload({ title:'Four year non-milestone',releaseDate:'2022-09-24' }));
+    const anniversaries=Model.getReleaseAnniversaries('2026-09-24');
+    assert.ok(anniversaries.some((item) => item.id === milestone.id && item.years === 5));
+    assert.equal(anniversaries.some((item) => item.title === 'Four year non-milestone'),false);
+    assert.throws(() => Model.getReleaseAnniversaries('2026-02-30'),/valid anniversary date/);
 });
 
 test('every supported filter is applied by the backend',() => {

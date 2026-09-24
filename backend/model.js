@@ -170,14 +170,11 @@ function normalizePayload(payload, existing = {}) {
     requireLength(payload.director,'Director or creator',1000); requireLength(payload.casts,'Cast',5000);
     requireLength(payload.productionCompany,'Production companies',3000); requireLength(payload.summary,'Summary',20000);
     requireLength(payload.seriesNetwork,'Network',500);
-    const legacyStatus=cleanText(payload.status);
-    const legacyProduction={ Announced:'Announced','Production Started':'Filming / Production',Filming:'Filming / Production' };
-    const legacyRelease={ 'Trailer Only':'Upcoming',Released:'Released',Watched:type === 'movie' ? 'Released' : 'Unknown' };
     const productionStatus=PRODUCTION_STATUSES.includes(cleanText(payload.productionStatus)) ? cleanText(payload.productionStatus)
-        : legacyProduction[legacyStatus] || (existing.productionStatus === 'Unknown' ? 'Announced' : existing.productionStatus) || 'Announced';
+        : existing.productionStatus || 'Announced';
     const releaseStatuses=type === 'series' ? SERIES_RELEASE_STATUSES : MOVIE_RELEASE_STATUSES;
     const releaseStatus=releaseStatuses.includes(cleanText(payload.releaseStatus)) ? cleanText(payload.releaseStatus)
-        : legacyRelease[legacyStatus] || existing.releaseStatus || 'Unscheduled';
+        : existing.releaseStatus || 'Unscheduled';
     const released=type === 'movie' ? releaseStatus === 'Released' : ['Airing','Between Seasons','Hiatus','Returning','Ended'].includes(releaseStatus);
     const trailerAvailable=!['Unscheduled','Unknown'].includes(releaseStatus);
     const releaseDate=type === 'series' ? (cleanText(payload.seriesStartDate) || cleanText(payload.releaseDate) || null) : (cleanText(payload.releaseDate) || null);
@@ -1258,6 +1255,11 @@ function importValidationIssues(item,existing={}) {
 
 // Compares an export with the active library without changing stored data.
 function previewImport(payload) {
+    if (payload?.integrity?.checksum) {
+        const copy={ ...payload }; delete copy.integrity;
+        const calculated=crypto.createHash('sha256').update(JSON.stringify(copy)).digest('hex');
+        if (calculated !== payload.integrity.checksum) throw Object.assign(new Error('The import archive integrity checksum does not match its contents'),{ status:400 });
+    }
     const ownership=ownerScope();
     const items=importItems(payload);
     const identities=new Map();
@@ -1280,6 +1282,11 @@ function previewImport(payload) {
 
 // Applies reviewed import decisions after creating one verified recovery backup.
 function applyImport(payload,decisions = {},context = {},options = {}) {
+    if (payload?.integrity?.checksum) {
+        const copy={ ...payload }; delete copy.integrity;
+        const calculated=crypto.createHash('sha256').update(JSON.stringify(copy)).digest('hex');
+        if (calculated !== payload.integrity.checksum) throw Object.assign(new Error('The import archive integrity checksum does not match its contents'),{ status:400 });
+    }
     const ownership=ownerScope();
     const items=importItems(payload);
     const strategy=options.strategy === 'replace-library' ? 'replace-library' : 'add-new';
@@ -1385,5 +1392,20 @@ function getAudit(query = {}) {
     }) };
 }
 
+// Returns milestone release anniversaries occurring on one calendar date.
+function getReleaseAnniversaries(onDate) {
+    const date=String(onDate || '').trim();
+    const parsed=new Date(`${date}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0,10) !== date) throw Object.assign(new Error('A valid anniversary date is required'),{ status:400 });
+    const year=Number(date.slice(0,4)); const monthDay=date.slice(5);
+    const ownership=ownerScope();
+    return database.prepare(`SELECT id,title,type,release_date FROM content_items
+        WHERE deleted_at IS NULL AND release_date IS NOT NULL AND substr(release_date,6,5)=? AND ${ownership.sql}
+        ORDER BY title COLLATE NOCASE`).all(monthDay,...ownership.parameters)
+        .map((row) => ({ id:row.id,title:row.title,type:row.type,releaseDate:row.release_date,years:year-Number(row.release_date.slice(0,4)) }))
+        .filter((item) => item.years === 3 || (item.years >= 5 && item.years % 5 === 0))
+        .sort((left,right) => right.years-left.years || left.title.localeCompare(right.title));
+}
+
 module.exports = { getContent,getMovies,getById,addContent,updateContent,bulkUpdateContent,deleteContent,restoreContent,permanentlyDeleteContent,toggleFavorite,
-    getNotifications,markNotificationRead,buildExportPayload,exportJson,createBackup,recordAudit,getAudit,getStatistics,getDataHealth,mergeCanonicalValues,previewImport,applyImport,getFilterCatalogs,searchProductionCompanies,mergeProductionCompanies,dismissProductionCompanySuggestion,normalizeTitle };
+    getNotifications,markNotificationRead,buildExportPayload,exportJson,createBackup,recordAudit,getAudit,getReleaseAnniversaries,getStatistics,getDataHealth,mergeCanonicalValues,previewImport,applyImport,getFilterCatalogs,searchProductionCompanies,mergeProductionCompanies,dismissProductionCompanySuggestion,normalizeTitle };

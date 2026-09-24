@@ -12,10 +12,13 @@ axios.interceptors.request.use((config) => { const csrf=sessionStorage.getItem('
 
 // Coordinates navigation, search, and the notification drawer for the application shell.
 function App() {
+  const accountAction=new URLSearchParams(window.location.search);
+  const hasAccountAction=accountAction.has('reset') || accountAction.has('invite');
   const [selectedMenu, setSelectedMenu] = useState('Library');
   const [searchTerm, setSearchTerm] = useState('');
   const [notificationSignal, setNotificationSignal] = useState(0);
   const [trashSignal,setTrashSignal] = useState(0);
+  const [librarySignal,setLibrarySignal]=useState(0);
   const [theme, setTheme] = useState(() => localStorage.getItem('cinevault-theme') || 'dark');
   const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('cinevault-font') || 'modern');
   const [authentication,setAuthentication]=useState({ loading:true,authenticated:false });
@@ -49,12 +52,12 @@ function App() {
   },[authentication.authenticated]);
 
   if (authentication.loading) return <div className="empty-state">Opening your private library…</div>;
-  if (!authentication.authenticated) return <Login setupRequired={authentication.setupRequired} onAuthenticated={(result) => setAuthentication({ loading:false,...result })} />;
+  if (hasAccountAction || !authentication.authenticated) return <Login setupRequired={authentication.setupRequired} onAuthenticated={(result) => setAuthentication({ loading:false,...result })} />;
   return (
     <div className="app-shell">
-      <Header theme={theme} fontFamily={fontFamily} onThemeChange={setTheme} onFontChange={setFontFamily} onNavigate={setSelectedMenu} selectedMenu={selectedMenu} trashSignal={trashSignal} user={authentication.user} onSignedOut={() => { sessionStorage.removeItem('cinevault-csrf'); setAuthentication({ loading:false,authenticated:false,setupRequired:false }); }} />
+      <Header theme={theme} fontFamily={fontFamily} onThemeChange={setTheme} onFontChange={setFontFamily} onNavigate={setSelectedMenu} selectedMenu={selectedMenu} trashSignal={trashSignal} librarySignal={librarySignal} user={authentication.user} onSignedOut={() => { sessionStorage.removeItem('cinevault-csrf'); setAuthentication({ loading:false,authenticated:false,setupRequired:false }); }} />
       <Navbar menu={setSelectedMenu} onSearch={setSearchTerm} selectedMenu={selectedMenu} notificationSignal={notificationSignal} />
-      <main><Content selectedMenu={selectedMenu} searchTerm={searchTerm} onNavigate={setSelectedMenu} onNotificationsChanged={() => setNotificationSignal((value) => value + 1)} onTrashChanged={() => setTrashSignal((value) => value + 1)} /></main>
+      <main><Content user={authentication.user} selectedMenu={selectedMenu} searchTerm={searchTerm} onNavigate={setSelectedMenu} onNotificationsChanged={() => setNotificationSignal((value) => value + 1)} onTrashChanged={() => setTrashSignal((value) => value + 1)} onLibraryChanged={() => setLibrarySignal((value) => value + 1)} /></main>
       <Footer />
     </div>
   );

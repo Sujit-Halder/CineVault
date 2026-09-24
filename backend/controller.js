@@ -11,6 +11,20 @@ function auditContext(req, outcome = 'success') {
     return { requestId:req.requestId,actor:req.authenticatedUser || 'owner',outcome,metadata:{ method:req.method,path:req.path,clientHash } };
 }
 
+// Creates a descriptive and filesystem-safe filename for a portable export.
+function exportFilename({ scope='Library',format='complete',count=0,ids=[],query={},timestamp=new Date() }) {
+    const safe=(value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+    const safeScope=safe(scope) || 'library';
+    const baseScope=safeScope.replace(/-selection$/,'');
+    const baseKeys={ movies:new Set(['type']),series:new Set(['type']),'watch-later':new Set(['watchLater']),trash:new Set(['trashed']),library:new Set() };
+    const ignored=new Set(['sort','order','page','limit','all']);
+    const activeKeys=Object.entries(query || {}).filter(([key,value]) => !ignored.has(key) && !['',null,undefined,false].includes(value) && (!Array.isArray(value) || value.length));
+    const additionallyFiltered=activeKeys.some(([key]) => !(baseKeys[baseScope] || new Set()).has(key));
+    const prefix=ids.length && safeScope.endsWith('-selection') ? baseScope : safeScope;
+    const descriptor=ids.length ? `selection-${count}` : additionallyFiltered ? `filtered-${count}` : `all-${count}`;
+    return `cinevault.${prefix}.${descriptor}.${format}.${timestamp.toISOString().replace(/[:.]/g,'-')}.json`;
+}
+
 // Sends a consistent error response and records operational and audit context.
 function sendError(req, res, error, operation, audit = {}) {
     const status = error.status || 500;
@@ -48,6 +62,12 @@ exports.getContentById = (req, res) => {
         if (!item) return res.status(404).json({ message:'Content item not found' });
         return res.json(item);
     } catch (error) { return sendError(req,res,error,'content.read',{ entityType:'content',entityId:req.params.id }); }
+};
+
+// Returns release milestones occurring on the requested local calendar date.
+exports.getReleaseAnniversaries = (req,res) => {
+    try { res.json({ anniversaries:Model.getReleaseAnniversaries(req.query.date) }); }
+    catch(error) { sendError(req,res,error,'content.anniversaries'); }
 };
 
 // Creates a movie or series from the request payload.
@@ -116,9 +136,8 @@ exports.readNotification = (req, res) => {
 exports.exportData = (_req, res) => {
     try {
         const payload = Model.buildExportPayload();
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.setHeader('Content-Disposition', `attachment; filename="cinevault.${timestamp}.json"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${exportFilename({ count:payload.content.length })}"`);
         Model.recordAudit('export','library',null,{ format:'json',destination:'browser',contentCount:payload.content.length },auditContext(_req));
         res.send(JSON.stringify(payload, null, 2));
     } catch (error) { sendError(_req,res,error,'library.export',{ action:'export',entityType:'library' }); }
@@ -131,10 +150,8 @@ exports.exportView = (req,res) => {
         const scope=String(req.body?.scope || 'Library').slice(0,80);
         const ids=Array.isArray(req.body?.ids) ? req.body.ids.slice(0,10000) : [];
         const payload=Model.buildExportPayload({ format,scope,ids,query:req.body?.query || {} });
-        const timestamp=new Date().toISOString().replace(/[:.]/g,'-');
-        const safeScope=scope.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'library';
         res.setHeader('Content-Type','application/json; charset=utf-8');
-        res.setHeader('Content-Disposition',`attachment; filename="cinevault.${safeScope}.${format}.${timestamp}.json"`);
+        res.setHeader('Content-Disposition',`attachment; filename="${exportFilename({ scope,format,count:payload.content.length,ids,query:req.body?.query || {} })}"`);
         Model.recordAudit('export','library',null,{ format,scope,destination:'browser',contentCount:payload.content.length,selected:Boolean(ids.length) },auditContext(req));
         res.send(JSON.stringify(payload,null,2));
     } catch(error) { sendError(req,res,error,'library.export',{ action:'export',entityType:'library' }); }

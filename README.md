@@ -221,7 +221,7 @@ Titles, original titles, directors, cast, production companies, networks, season
 
 Production companies use canonical relational records plus searchable aliases and a many-to-many content link. Full corporate names remain the canonical stored value. Data Health suggests—but never automatically performs—possible merges. Countries are stored as stable ISO-style codes and displayed as names. Official ratings retain territory, authority, code, and any historical classification metadata, with at most one rating per territory.
 
-Primary application tables include `content_items`, `seasons`, `episodes`, `watch_history`, `episode_watch_history`, `content_links`, `production_companies`, `production_company_aliases`, `content_production_companies`, `series_credits`, `notifications`, `asset_checks`, `audit_log`, and `schema_migrations`. SQLite FTS5 maintains the `content_search` index and its internal support tables.
+Primary library tables include `content_items`, `library_entries`, `seasons`, `episodes`, `watch_history`, `episode_watch_history`, `content_links`, `metadata_terms`, `content_metadata_terms`, `content_languages`, `content_countries`, `content_official_ratings`, `content_watch_sources`, `production_companies`, `production_company_aliases`, `content_production_companies`, and `series_credits`. Operational and security tables include `app_users`, `auth_sessions`, `auth_invitations`, `password_reset_tokens`, `account_deletion_challenges`, `ownership_transfer_challenges`, `security_rate_limits`, `notifications`, `asset_checks`, `audit_log`, and `schema_migrations`. SQLite FTS5 maintains the `content_search` index and its internal support tables.
 
 ## 🗄️ Storage, backup, and disaster recovery
 
@@ -249,20 +249,10 @@ Artifact directories are created only when they are needed:
 | Path | First created when |
 |---|---|
 | `backend/data/backups/` | A manual or website backup is requested, or a data-changing operation requires a recovery snapshot |
-| `backend/data/exports/` | JSON data is exported or a genuine legacy import writes its migration report |
+| `backend/data/exports/` | A command-line JSON export explicitly writes a server-side file |
 | `backend/data/server.lock` | The API server is running |
 
 If `MOVIE_TRACKER_DATA_DIR` is configured, the same behavior applies under that directory instead of `backend/data`.
-
-### Optional legacy JSON import
-
-Only when `backend/movies.json` exists and no SQLite database has already been initialized, CineVault:
-
-1. Creates the SQLite schema.
-2. Archives `backend/movies.json` with a timestamp.
-3. Imports every legacy record while preserving its UUID.
-4. Runs `PRAGMA integrity_check`.
-5. Writes a JSON migration report under `backend/data/exports/`.
 
 ### Backup, export, and restore
 
@@ -416,7 +406,15 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-On the first account-aware startup, CineVault asks for the existing `APP_PASSWORD`, an owner Gmail address, display name, and a new account password. The owner account claims the existing library. After that, `APP_PASSWORD` is only a setup compatibility value; sign-in uses the password hash stored for the account. The owner can send a 48-hour Gmail invitation from the header. There is no public signup route: invited members must use the exact Gmail address in their link. Password-recovery links expire after one hour and invalidate existing sessions after use.
+On the first account-aware startup, CineVault asks for the existing `APP_PASSWORD`, an owner email address, display name, and a new account password. The owner account claims the existing library. After that, `APP_PASSWORD` is only a setup compatibility value; sign-in uses the password hash stored for the account. The owner can send a 48-hour invitation to any valid email address from the header. There is no public signup route: each invitation link prefills and locks its recipient address, and the backend independently requires an exact match. Activation also requires a six-digit code delivered to that mailbox; the code expires after 10 minutes, can be requested at most once per minute, and is locked after five incorrect attempts until a new code is requested. A forwarded invitation URL alone therefore cannot create the account. Password-recovery links expire after one hour and invalidate existing sessions after use.
+
+Any signed-in member can choose **Remove account** from the header. CineVault emails a separate 10-minute verification code and requires the exact phrase `DELETE MY ACCOUNT`. After successful verification, the browser receives and downloads a complete JSON archive containing the member's active library and Trash. Only after that archive response reaches the browser does a second authenticated request schedule or permanently perform the requested removal. The owner receives an informational email containing the removed account identity, time and title count—never the private archive. The owner account cannot be removed while any member account remains, preventing an ownerless installation.
+
+The safe default schedules a member account for deletion after a 14-day recovery window. Sign-in is disabled immediately, while the owner can restore the account from **Accounts & security** before the deadline. Expired scheduled accounts are purged at startup and every six hours. Immediate permanent deletion is an explicitly labeled alternative; the final owner must use it because no owner would remain to authorize restoration. A verified database backup precedes owner-triggered permanent member deletion and automatic expiry purges.
+
+The owner-only **Accounts & security** screen shows members, roles, status, last sign-in, scheduled deletion, pending invitations, provider delivery state, expiration and recent security events. It supports invitation revocation, member disable/activation, scheduled-deletion recovery and ownership transfer. Ownership transfer requires a 10-minute code sent to the current owner's mailbox, updates both roles atomically and notifies both accounts.
+
+Account-removal archives carry the portable export schema version plus a SHA-256 integrity checksum calculated over the archive before the integrity field is added. Password hashes, salts, sessions, invitation tokens and recovery tokens are never exported. After permanent deletion, retained audit events replace the former email identity with a stable `deleted-user:…` pseudonym and redact that email from diagnostic details.
 
 For Gmail delivery, enable two-step verification for the mailbox, create a Google app password, and store it only as `GMAIL_APP_PASSWORD`. In development, when Gmail SMTP is not configured, the backend writes the invitation or reset URL to the application log for local testing; production refuses to pretend that an email was sent.
 
@@ -433,12 +431,12 @@ On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. B
 | `APP_PASSWORD` | empty | Authorizes the one-time first-owner upgrade from the former single-password system |
 | `GMAIL_SMTP_USER` | empty | Gmail mailbox that sends account invitations and recovery links |
 | `GMAIL_APP_PASSWORD` | empty | Google app password for that mailbox; required for production invitation/recovery email |
+| `MAIL_WEBHOOK_SECRET` | empty | Strong secret accepted by the optional provider delivery-status webhook |
 | `NODE_ENV` | development | Set to `production` for secure cookies and HSTS |
 | `TRUST_PROXY` | `0` | Set to `1` behind one trusted reverse proxy |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Per-client in-memory request allowance |
 | `MOVIE_TRACKER_DATA_DIR` | `backend/data` | Absolute or resolved runtime database/backup/export directory |
 | `MOVIE_TRACKER_TIME_ZONE` | `Asia/Kolkata` | Calendar zone used for generated watch timestamps |
-| `MOVIE_TRACKER_SKIP_LEGACY_IMPORT` | `0` | Set to `1` for isolated tests or deployments that must never import `movies.json` |
 | `ASSET_SCAN_COOLDOWN_HOURS` | `24` | Minimum age before an unchanged media URL is checked again |
 | `LOG_LEVEL` | `info` | Winston operational-log threshold |
 | `BACKUP_MIRROR_DIR` | empty | Absolute off-device or synchronized mirror directory |
@@ -447,7 +445,7 @@ On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. B
 | `AUTOMATIC_DAILY_RETENTION_DAYS` | `30` | Daily automatic snapshot retention window |
 | `AUTOMATIC_MONTHLY_RETENTION_MONTHS` | `12` | Older monthly automatic snapshots retained |
 
-Authentication sessions live in backend memory and expire after 12 hours of inactivity. Restarting the backend invalidates existing sessions and requires a new login. The cookie is HTTP-only, SameSite=Strict, scoped to `/api`, and Secure in production. State-changing authenticated requests also require the session CSRF token.
+Authentication sessions are persisted in SQLite and expire after 12 hours of inactivity. Ordinary backend restarts preserve valid sessions. The cookie is HTTP-only, SameSite=Strict, scoped to `/api`, and Secure in production. State-changing authenticated requests also require the session CSRF token.
 
 ### Frontend environment
 
@@ -536,11 +534,21 @@ All protected routes use a persisted account session cookie. Mutating requests r
 | `GET` | `/api/auth/status` | Read authentication state and current CSRF token |
 | `POST` | `/api/auth/setup` | Create the first owner and claim an existing library |
 | `POST` | `/api/auth/login` | Create a persisted 12-hour account session |
-| `POST` | `/api/auth/invitations` | Owner-only invitation for one Gmail address |
-| `POST` | `/api/auth/signup` | Create an account from one valid invitation token |
+| `POST` | `/api/auth/invitations` | Owner-only invitation for one valid email address |
+| `POST` | `/api/auth/invitations/verify-email` | Email a short-lived activation code to the invitation recipient |
+| `POST` | `/api/auth/signup` | Create an account from one valid invitation plus its mailbox code |
 | `POST` | `/api/auth/forgot-password` | Request a non-enumerating recovery email |
 | `POST` | `/api/auth/reset-password` | Consume a recovery token and invalidate old sessions |
+| `POST` | `/api/auth/mail-delivery` | Optional authenticated provider webhook for delivered, deferred, bounced, or rejected status |
 | `POST` | `/api/auth/logout` | Invalidate the current session |
+| `POST` | `/api/v1/account/deletion/request` | Email an authenticated account-removal code |
+| `POST` | `/api/v1/account/deletion/confirm` | Verify removal and download the complete private JSON archive |
+| `POST` | `/api/v1/account/deletion/finalize` | Permanently delete the account after archive receipt |
+| `GET` | `/api/v1/accounts` | Owner account, invitation, and recent security overview |
+| `DELETE` | `/api/v1/accounts/invitations/:id` | Revoke an unused invitation |
+| `PATCH` | `/api/v1/accounts/:id` | Activate, disable, restore, or permanently remove a member |
+| `POST` | `/api/v1/accounts/ownership/request` | Email the current owner an ownership-transfer code |
+| `POST` | `/api/v1/accounts/ownership/confirm` | Atomically complete a verified ownership transfer |
 
 Legacy `/api/movie` endpoints remain available during the transition.
 
@@ -1041,7 +1049,7 @@ These settings improve repeat visits and deployments by avoiding repeated downlo
 
 For internet hosting, place CineVault behind HTTPS and an authentication gateway such as a private VPN, identity-aware proxy, or invite-only reverse proxy. Do not expose the SQLite database, backups, exports, `.env` files, or source references through the frontend web root.
 
-The first owner is created through the first-run screen; `APP_PASSWORD` authorizes that one-time conversion. Subsequent access uses invitation-only Gmail identities and scrypt-derived password hashes. Session, invitation, and recovery secrets are persisted only as SHA-256 hashes. Sessions use an HTTP-only, SameSite=Strict cookie, a separate CSRF token, a rolling 12-hour lifetime, restricted CORS, security headers, and request rate limiting. Configure Gmail SMTP for invitations and recovery. In production, terminate HTTPS at the reverse proxy and set `NODE_ENV=production`, `TRUST_PROXY=1`, and `WEBSITE` to the exact HTTPS frontend origin. `RATE_LIMIT_PER_MINUTE` defaults to 300.
+The first owner is created through the first-run screen; `APP_PASSWORD` authorizes that one-time conversion. Subsequent access uses invitation-only email identities from any provider and scrypt-derived password hashes. Session, invitation, verification, removal, and recovery secrets are persisted only as one-way hashes. Account activation requires both the bound invitation link and a short-lived code sent to its mailbox. Sessions use an HTTP-only, SameSite=Strict cookie, a separate CSRF token, a rolling 12-hour lifetime, restricted CORS, security headers, and request rate limiting. The configured Gmail SMTP mailbox can deliver invitations, verification codes, recovery messages and deletion notices to any valid recipient domain. In production, terminate HTTPS at the reverse proxy and set `NODE_ENV=production`, `TRUST_PROXY=1`, and `WEBSITE` to the exact HTTPS frontend origin. `RATE_LIMIT_PER_MINUTE` defaults to 300.
 
 External media checks accept only HTTP(S), reject localhost and private-network destinations, validate redirects, limit redirects to three, request only a small byte range, and coalesce scans. Automatic connection checks have a 24-hour cooldown by default; change it with `ASSET_SCAN_COOLDOWN_HOURS`. The Data Health screen provides the explicit full-scan control.
 

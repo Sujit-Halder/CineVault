@@ -11,10 +11,8 @@ const DATA_DIR = process.env.MOVIE_TRACKER_DATA_DIR ? path.resolve(process.env.M
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const EXPORT_DIR = path.join(DATA_DIR, 'exports');
 const DATABASE_FILE = path.join(DATA_DIR, 'movie-tracker.sqlite');
-const LEGACY_FILE = path.join(__dirname, 'movies.json');
 const databaseExistedAtStartup = fs.existsSync(DATABASE_FILE);
-const legacyImportEnabled = process.env.MOVIE_TRACKER_SKIP_LEGACY_IMPORT !== '1';
-const freshInstallation = !databaseExistedAtStartup && (!legacyImportEnabled || !fs.existsSync(LEGACY_FILE));
+const freshInstallation = !databaseExistedAtStartup;
 let startupMigrationsComplete = false;
 const OFFICIAL_INDIAN_RATINGS = new Map([
     ['Phule','U'],['War 2','UA 16+'],['Maa','UA 16+'],['Kantara: Chapter 1','UA 16+'],
@@ -1398,6 +1396,56 @@ function migrateProductionStatusDefaults(database) {
     return { version,updated:pending.map((definition) => definition.name),backup:backup ? path.basename(backup) : null };
 }
 
+// Adds mailbox-verification state for invitations and protected account removal.
+function migrateAccountVerification(database) {
+    const version=43;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    createBackup(database,'pre-account-verification-migration');
+    const invitationColumns=new Set(database.prepare('PRAGMA table_info(auth_invitations)').all().map((column) => column.name));
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        if (!invitationColumns.has('verification_hash')) database.exec('ALTER TABLE auth_invitations ADD COLUMN verification_hash TEXT');
+        if (!invitationColumns.has('verification_expires_at')) database.exec('ALTER TABLE auth_invitations ADD COLUMN verification_expires_at TEXT');
+        if (!invitationColumns.has('verification_sent_at')) database.exec('ALTER TABLE auth_invitations ADD COLUMN verification_sent_at TEXT');
+        if (!invitationColumns.has('verification_attempts')) database.exec('ALTER TABLE auth_invitations ADD COLUMN verification_attempts INTEGER NOT NULL DEFAULT 0');
+        database.exec(`CREATE TABLE IF NOT EXISTS account_deletion_challenges (
+            user_id TEXT PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,otp_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL
+        )`);
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString());
+        database.exec('COMMIT');
+        return { version,invitationVerification:true,accountDeletionChallenges:true };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
+// Adds account lifecycle, delivery tracking, ownership transfer, and persistent security-rate state.
+function migrateAccountLifecycle(database) {
+    const version=44;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    createBackup(database,'pre-account-lifecycle-migration');
+    const userColumns=new Set(database.prepare('PRAGMA table_info(app_users)').all().map((column) => column.name));
+    const invitationColumns=new Set(database.prepare('PRAGMA table_info(auth_invitations)').all().map((column) => column.name));
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        if (!userColumns.has('deletion_scheduled_at')) database.exec('ALTER TABLE app_users ADD COLUMN deletion_scheduled_at TEXT');
+        if (!userColumns.has('deletion_requested_at')) database.exec('ALTER TABLE app_users ADD COLUMN deletion_requested_at TEXT');
+        if (!invitationColumns.has('delivery_status')) database.exec("ALTER TABLE auth_invitations ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'pending'");
+        if (!invitationColumns.has('delivery_message_id')) database.exec("ALTER TABLE auth_invitations ADD COLUMN delivery_message_id TEXT NOT NULL DEFAULT ''");
+        if (!invitationColumns.has('delivery_response')) database.exec("ALTER TABLE auth_invitations ADD COLUMN delivery_response TEXT NOT NULL DEFAULT ''");
+        database.exec(`CREATE TABLE IF NOT EXISTS ownership_transfer_challenges (
+            owner_user_id TEXT PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,target_user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+            otp_hash TEXT NOT NULL,expires_at TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS security_rate_limits (
+            scope TEXT NOT NULL,key_hash TEXT NOT NULL,window_started_at TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(scope,key_hash)
+        );`);
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,new Date().toISOString());
+        database.exec('COMMIT');
+        return { version,accountLifecycle:true,deliveryTracking:true,ownershipTransfer:true,persistentRateLimits:true };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
 // Creates a verified SQLite snapshot in the rotating backup directory.
 function createBackup(database, label = 'automatic') {
     if (freshInstallation && !startupMigrationsComplete && label.startsWith('pre-')) return null;
@@ -1429,7 +1477,7 @@ function createBackup(database, label = 'automatic') {
 ensureDirectories();
 const database = new DatabaseSync(DATABASE_FILE);
 createSchema(database);
-const migrationReport = process.env.MOVIE_TRACKER_SKIP_LEGACY_IMPORT === '1' ? null : migrateLegacyData(database);
+const migrationReport = null;
 const countryMigrationReport = [
     migrateCountryCodes(database, 2, 'pre-country-normalization'),
     migrateCountryCodes(database, 3, 'pre-country-alias-normalization'),
@@ -1473,6 +1521,8 @@ const accountArchitectureReport = migrateAccountArchitecture(database);
 const relationalMetadataReport = migrateRelationalMetadata(database);
 const metadataJsonRemovalReport = removeMetadataJsonColumns(database);
 const productionStatusDefaultReport = migrateProductionStatusDefaults(database);
+const accountVerificationReport = migrateAccountVerification(database);
+const accountLifecycleReport = migrateAccountLifecycle(database);
 if (freshInstallation) {
     database.prepare("DELETE FROM audit_log WHERE actor='migration'").run();
 } else {
@@ -1515,7 +1565,9 @@ if (accountArchitectureReport) logger.event('info','database.migration.completed
 if (relationalMetadataReport) logger.event('info','database.migration.completed','Relational metadata migration completed',relationalMetadataReport);
 if (metadataJsonRemovalReport) logger.event('info','database.migration.completed','Metadata JSON columns removed after relational parity verification',metadataJsonRemovalReport);
 if (productionStatusDefaultReport) logger.event('info','database.migration.completed','Production-status schema defaults updated',productionStatusDefaultReport);
+if (accountVerificationReport) logger.event('info','database.migration.completed','Account verification schema added',accountVerificationReport);
+if (accountLifecycleReport) logger.event('info','database.migration.completed','Account lifecycle and security schema added',accountLifecycleReport);
 }
 startupMigrationsComplete = true;
 
-module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport,productionStatusDefaultReport };
+module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport,productionStatusDefaultReport,accountVerificationReport,accountLifecycleReport };

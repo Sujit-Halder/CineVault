@@ -9,12 +9,13 @@ import Statistics from './Statistics';
 import DataHealth from './DataHealth';
 import LibraryTable from './LibraryTable';
 import ActivityLog from './ActivityLog';
+import AccountManagement from './AccountManagement';
 import { AWARDS, PERSONAL_RATINGS, TAGS } from '../catalogOptions';
 
 const API = import.meta.env.VITE_API_URL;
 
 // Manages server-backed library queries, editing, pagination, exports, and notifications.
-const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged, onTrashChanged }) => {
+const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged, onTrashChanged, onLibraryChanged, user }) => {
   const [result, setResult] = useState({ items:[], total:0, page:1, pages:0 });
   const [catalogs, setCatalogs] = useState({ countries:[],languages:[], ratingSystems:[], genres:[],presentationForms:{ movie:[],series:[] },watchSources:[],subtypes:{ movie:[],series:[] },productionCompanies:[],linkDomains:[] });
   const [notifications, setNotifications] = useState([]);
@@ -31,6 +32,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   const [selectedRows,setSelectedRows]=useState([]);
   const [showExport,setShowExport]=useState(false);
   const [exportFormat,setExportFormat]=useState('complete');
+  const [exporting,setExporting]=useState(false);
   const [viewMode,setViewMode]=useState(() => localStorage.getItem('cinevault-view') || 'cards');
   const [focusId,setFocusId] = useState(null);
   const [focusReturnMenu,setFocusReturnMenu]=useState('Library');
@@ -78,7 +80,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
 
   // Loads the paginated library using the current navigation and query state.
   const loadContent = async () => {
-    if (selectedMenu === 'Notifications' || selectedMenu === 'Statistics' || selectedMenu === 'Data Health' || selectedMenu === 'Activity') return;
+    if (selectedMenu === 'Notifications' || selectedMenu === 'Statistics' || selectedMenu === 'Data Health' || selectedMenu === 'Activity' || selectedMenu === 'Accounts') return;
     setLoading(true);
     try {
       if (selectedMenu === 'Library' && focusId) {
@@ -135,7 +137,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
       setShowForm(false); setEditing(null);
       clearEditQuery();
       await Promise.all([loadContent(), loadSupportData()]);
-      onNotificationsChanged();
+      onNotificationsChanged(); onLibraryChanged();
     } catch (error) { notify(error.response?.data?.message || 'The entry could not be saved'); }
   };
 
@@ -159,7 +161,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
     if (!window.confirm(`Move “${item.title}” to trash?`)) return;
     try {
       const response = await axios.delete(`${API}/api/v1/content/${item.id}`);
-      notify(response.data.message); onTrashChanged(); loadContent();
+      notify(response.data.message); onTrashChanged(); onLibraryChanged(); loadContent();
     } catch (error) { notify(error.response?.data?.message || 'The entry could not be moved to trash'); }
   };
 
@@ -175,6 +177,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
       const response = await axios.post(`${API}/api/v1/trash/${item.id}/restore`);
       notify(response.data.message);
       onTrashChanged();
+      onLibraryChanged();
       if (result.items.length === 1 && page > 1) setPage((value) => value - 1); else loadContent();
     } catch (error) {
       if (error.response?.data?.code === 'RESTORE_CONFLICT') {
@@ -191,7 +194,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
     if (resolution === 'replace' && !window.confirm(`Replace “${restoreConflict.conflict.title}”? The active entry will be moved to Trash.`)) return;
     try {
       const response=await axios.post(`${API}/api/v1/trash/${restoreConflict.item.id}/restore`,{ resolution });
-      notify(response.data.message); setRestoreConflict(null); onTrashChanged(); loadContent();
+      notify(response.data.message); setRestoreConflict(null); onTrashChanged(); onLibraryChanged(); loadContent();
     } catch (error) { notify(error.response?.data?.message || 'The restore conflict could not be resolved'); }
   };
 
@@ -206,6 +209,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
       const response = await axios.delete(`${API}/api/v1/trash/${item.id}/permanent`);
       notify(`${response.data.message}. Recovery backup: ${response.data.backup}`);
       onTrashChanged();
+      onLibraryChanged();
       if (result.items.length === 1 && page > 1) setPage((value) => value - 1); else loadContent();
     } catch (error) { notify(error.response?.data?.message || 'The entry could not be permanently deleted'); }
   };
@@ -222,7 +226,9 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
 
   // Downloads the selected rows or complete filtered view in the chosen portable format.
   const exportData = async () => {
+    if (exporting) return;
     const selected=focusId ? [focusId] : viewMode === 'table' ? selectedRows.map((item) => item.id) : [];
+    setExporting(true); setMessage('Preparing your export…');
     try {
       const response=await axios.post(`${API}/api/v1/export/json`,{
         format:exportFormat,scope:focusId ? 'Focused entry' : selected.length ? `${selectedMenu} selection` : selectedMenu,ids:selected,query:selected.length ? {} : buildViewQuery(false),
@@ -233,6 +239,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
       setShowExport(false); notify(`${exportFormat === 'clean' ? 'Clean' : 'Complete'} export downloaded`);
     } catch(error) { notify(error.response?.data?.message || 'The export could not be created'); }
+    finally { setExporting(false); }
   };
 
   // Requests a verified SQLite backup from the API.
@@ -257,7 +264,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   // Applies one lifecycle value to selected rows after an explicit bulk-change review.
   const bulkUpdate=async (ids,field,value) => {
     if (!window.confirm(`Apply ${value} as ${field === 'productionStatus' ? 'production' : 'release'} status to ${ids.length} selected title${ids.length === 1 ? '' : 's'}?`)) return false;
-    try { const response=await axios.patch(`${API}/api/v1/content/bulk/lifecycle`,{ ids,field,value }); notify(`${response.data.updated} titles updated`); await loadContent(); return true; }
+    try { const response=await axios.patch(`${API}/api/v1/content/bulk/lifecycle`,{ ids,field,value }); notify(`${response.data.updated} titles updated`); await loadContent(); onLibraryChanged(); return true; }
     catch(error) { notify(error.response?.data?.message || 'The selected titles could not be updated'); return false; }
   };
 
@@ -270,8 +277,9 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
 
   if (selectedMenu === 'Notifications') return <NotificationPanel notifications={notifications} onOpen={openNotification} onClose={() => onNavigate('Library')} />;
   if (selectedMenu === 'Statistics') return <Statistics />;
-  if (selectedMenu === 'Data Health') return <DataHealth onOpen={(id) => { setFocusReturnMenu('Data Health'); setFocusId(id); onNavigate('Library'); }} />;
+  if (selectedMenu === 'Data Health') return <DataHealth onLibraryChanged={onLibraryChanged} onOpen={(id) => { setFocusReturnMenu('Data Health'); setFocusId(id); onNavigate('Library'); }} />;
   if (selectedMenu === 'Activity') return <div className="content-area"><ActivityLog onOpen={(id) => { setFocusReturnMenu('Activity'); setFocusId(id); onNavigate('Library'); }} onClose={() => onNavigate('Library')} /></div>;
+  if (selectedMenu === 'Accounts') return user?.role === 'owner' ? <AccountManagement onClose={() => onNavigate('Library')} /> : <div className="empty-state">Only the CineVault owner can manage accounts.</div>;
 
   return (
     <section className="content-area" ref={contentTopRef}>
@@ -301,7 +309,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
       {result.pages > 1 && <div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {result.pages}</span><form className="page-jump" onSubmit={goToPage}><label htmlFor="page-number">Go to</label><input id="page-number" type="number" min="1" max={result.pages} value={pageInput} onChange={(event) => setPageInput(event.target.value)} /><button type="submit">Go</button></form><button disabled={page === result.pages} onClick={() => setPage((value) => value + 1)}>Next</button></div>}
       {showForm && <MovieForm initialData={editing} catalogs={catalogs} onClose={closeEditor} onSubmit={saveItem} />}
       {restoreConflict && <div className="modal-backdrop" role="presentation"><section className="conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="restore-conflict-title"><span className="eyebrow">RESTORE CONFLICT</span><h2 id="restore-conflict-title">An active entry already matches</h2><p><strong>{restoreConflict.conflict.title}</strong> has the same type and release date as the trashed entry.</p><dl><div><dt>Cancel</dt><dd>Keep both entries unchanged.</dd></div><div><dt>Replace</dt><dd>Restore this entry and move the currently active one to Trash.</dd></div><div><dt>Merge</dt><dd>Combine metadata, watch history, and content links into the active entry.</dd></div></dl><div className="modal-actions"><button type="button" onClick={() => setRestoreConflict(null)}>Cancel</button><button type="button" onClick={() => resolveRestoreConflict('replace')}>Replace</button><button type="button" className="primary-action" onClick={() => resolveRestoreConflict('merge')}>Merge</button></div></section></div>}
-      {showExport && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setShowExport(false)}><section className="conflict-dialog export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title"><span className="eyebrow">PORTABLE DATA</span><h2 id="export-title">Choose export format</h2><p>{focusId ? 'The currently focused title will be exported.' : viewMode === 'table' && selectedRows.length ? `${selectedRows.length} selected title${selectedRows.length === 1 ? '' : 's'} across table pages will be exported.` : `All ${result.total.toLocaleString()} titles matching the current ${selectedMenu.toLowerCase()} view, search, filters, and sorting will be exported.`} Titles exported from Trash are restored to the active library when imported.</p><label className="export-choice"><input type="radio" name="export-format" value="complete" checked={exportFormat === 'complete'} onChange={() => setExportFormat('complete')} /><span><strong>Complete recovery export</strong><small>Retains internal IDs, timestamps, relationships, and every title detail for the closest possible reconstruction.</small></span></label><label className="export-choice"><input type="radio" name="export-format" value="clean" checked={exportFormat === 'clean'} onChange={() => setExportFormat('clean')} /><span><strong>Clean transferable export</strong><small>Retains every movie, series, season, episode, source, link, and watch record while omitting database IDs and internal timestamps.</small></span></label><div className="modal-actions"><button type="button" onClick={() => setShowExport(false)}>Cancel</button><button type="button" className="primary-action" disabled={exportUnavailable} onClick={exportData}><FaDownload /> Download export</button></div></section></div>}
+      {showExport && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => !exporting && event.target === event.currentTarget && setShowExport(false)}><section className="conflict-dialog export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title"><span className="eyebrow">PORTABLE DATA</span><h2 id="export-title">Choose export format</h2><p>{focusId ? 'The currently focused title will be exported.' : viewMode === 'table' && selectedRows.length ? `${selectedRows.length} selected title${selectedRows.length === 1 ? '' : 's'} across table pages will be exported.` : `All ${result.total.toLocaleString()} titles matching the current ${selectedMenu.toLowerCase()} view, search, filters, and sorting will be exported.`} Titles exported from Trash are restored to the active library when imported.</p><label className="export-choice"><input disabled={exporting} type="radio" name="export-format" value="complete" checked={exportFormat === 'complete'} onChange={() => setExportFormat('complete')} /><span><strong>Complete recovery export</strong><small>Retains internal IDs, timestamps, relationships, and every title detail for the closest possible reconstruction.</small></span></label><label className="export-choice"><input disabled={exporting} type="radio" name="export-format" value="clean" checked={exportFormat === 'clean'} onChange={() => setExportFormat('clean')} /><span><strong>Clean transferable export</strong><small>Retains every movie, series, season, episode, source, link, and watch record while omitting database IDs and internal timestamps.</small></span></label><div className="modal-actions"><button type="button" disabled={exporting} onClick={() => setShowExport(false)}>Cancel</button><button type="button" className="primary-action" aria-busy={exporting} disabled={exportUnavailable || exporting} onClick={exportData}><FaDownload /> {exporting ? 'Preparing export…' : 'Download export'}</button></div></section></div>}
       {showFilters && <FilterPanel filters={filters} catalogs={catalogs} awards={AWARDS} tags={TAGS} ratings={PERSONAL_RATINGS} lockedViewingStatus={selectedMenu === 'Movies' ? 'Watched' : ''} lockedType={selectedMenu === 'Movies' ? 'movie' : selectedMenu === 'Series' ? 'series' : ''} onChange={setFilters} onClose={() => setShowFilters(false)} />}
     </section>
   );
