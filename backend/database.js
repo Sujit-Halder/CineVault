@@ -1446,6 +1446,68 @@ function migrateAccountLifecycle(database) {
     } catch(error) { database.exec('ROLLBACK'); throw error; }
 }
 
+// Normalizes people, title credits, episode credits, and series networks without removing source data.
+function migrateRelationalCredits(database) {
+    const version=45;
+    if (database.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return null;
+    createBackup(database,'pre-relational-credits-migration');
+    const split=(value) => normalizeCommaSeparatedText(value).split(',').map((item) => item.trim()).filter(Boolean);
+    const now=new Date().toISOString(); let titleCredits=0; let episodeCredits=0; let networkLinks=0;
+    database.exec('BEGIN IMMEDIATE');
+    try {
+        database.exec(`CREATE TABLE IF NOT EXISTS people (
+            id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE UNIQUE,canonical_name TEXT NOT NULL,created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS content_credits (
+            content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
+            person_id TEXT NOT NULL REFERENCES people(id) ON DELETE RESTRICT,role TEXT NOT NULL,display_order INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(content_id,person_id,role)
+        );
+        CREATE TABLE IF NOT EXISTS episode_credits (
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            person_id TEXT NOT NULL REFERENCES people(id) ON DELETE RESTRICT,role TEXT NOT NULL,display_order INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(episode_id,person_id,role)
+        );
+        CREATE TABLE IF NOT EXISTS networks (
+            id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE UNIQUE,canonical_name TEXT NOT NULL,created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS content_networks (
+            content_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
+            network_id TEXT NOT NULL REFERENCES networks(id) ON DELETE RESTRICT,display_order INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(content_id,network_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_content_credits_person ON content_credits(person_id,role,content_id);
+        CREATE INDEX IF NOT EXISTS idx_episode_credits_person ON episode_credits(person_id,role,episode_id);
+        CREATE INDEX IF NOT EXISTS idx_content_networks_network ON content_networks(network_id,content_id);`);
+        const personId=(name) => {
+            const normalized=normalizeSingleLineText(name); const existing=database.prepare('SELECT id FROM people WHERE name=? COLLATE NOCASE').get(normalized);
+            if (existing) return existing.id;
+            const id=crypto.randomUUID(); database.prepare('INSERT INTO people(id,name,canonical_name,created_at) VALUES(?,?,?,?)').run(id,normalized,normalized.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,''),now); return id;
+        };
+        const networkId=(name) => {
+            const normalized=normalizeSingleLineText(name); const existing=database.prepare('SELECT id FROM networks WHERE name=? COLLATE NOCASE').get(normalized);
+            if (existing) return existing.id;
+            const id=crypto.randomUUID(); database.prepare('INSERT INTO networks(id,name,canonical_name,created_at) VALUES(?,?,?,?)').run(id,normalized,normalized.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,''),now); return id;
+        };
+        const addContent=database.prepare('INSERT OR IGNORE INTO content_credits(content_id,person_id,role,display_order) VALUES(?,?,?,?)');
+        database.prepare('SELECT id,type,director,casts,series_network FROM content_items').all().forEach((row) => {
+            split(row.director).forEach((name,index) => { titleCredits += addContent.run(row.id,personId(name),'Director',index).changes; });
+            split(row.casts).forEach((name,index) => { titleCredits += addContent.run(row.id,personId(name),'Cast',index).changes; });
+            if (row.type === 'series') split(row.series_network).forEach((name,index) => { networkLinks += database.prepare('INSERT OR IGNORE INTO content_networks(content_id,network_id,display_order) VALUES(?,?,?)').run(row.id,networkId(name),index).changes; });
+        });
+        database.prepare('SELECT series_id,person_name,role,display_order FROM series_credits').all().forEach((credit) => { titleCredits += addContent.run(credit.series_id,personId(credit.person_name),credit.role,credit.display_order).changes; });
+        const addEpisode=database.prepare('INSERT OR IGNORE INTO episode_credits(episode_id,person_id,role,display_order) VALUES(?,?,?,?)');
+        database.prepare('SELECT id,director FROM episodes').all().forEach((episode) => split(episode.director).forEach((name,index) => { episodeCredits += addEpisode.run(episode.id,personId(name),'Director',index).changes; }));
+        const expectedTitle=database.prepare("SELECT id,director FROM content_items WHERE trim(director)<>''").all().reduce((count,row) => count+new Set(split(row.director).map((name) => name.toLocaleLowerCase())).size,0);
+        const storedDirectors=database.prepare("SELECT COUNT(*) count FROM content_credits WHERE role='Director'").get().count;
+        const expectedEpisode=database.prepare("SELECT id,director FROM episodes WHERE trim(director)<>''").all().reduce((count,row) => count+new Set(split(row.director).map((name) => name.toLocaleLowerCase())).size,0);
+        const storedEpisode=database.prepare("SELECT COUNT(*) count FROM episode_credits WHERE role='Director'").get().count;
+        if (storedDirectors < expectedTitle || storedEpisode < expectedEpisode) throw new Error('Relational credit parity verification failed');
+        database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(version,now); database.exec('COMMIT');
+        return { version,people:database.prepare('SELECT COUNT(*) count FROM people').get().count,titleCredits,episodeCredits,networkLinks };
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
+}
+
 // Creates a verified SQLite snapshot in the rotating backup directory.
 function createBackup(database, label = 'automatic') {
     if (freshInstallation && !startupMigrationsComplete && label.startsWith('pre-')) return null;
@@ -1523,6 +1585,7 @@ const metadataJsonRemovalReport = removeMetadataJsonColumns(database);
 const productionStatusDefaultReport = migrateProductionStatusDefaults(database);
 const accountVerificationReport = migrateAccountVerification(database);
 const accountLifecycleReport = migrateAccountLifecycle(database);
+const relationalCreditsReport = migrateRelationalCredits(database);
 if (freshInstallation) {
     database.prepare("DELETE FROM audit_log WHERE actor='migration'").run();
 } else {
@@ -1567,7 +1630,8 @@ if (metadataJsonRemovalReport) logger.event('info','database.migration.completed
 if (productionStatusDefaultReport) logger.event('info','database.migration.completed','Production-status schema defaults updated',productionStatusDefaultReport);
 if (accountVerificationReport) logger.event('info','database.migration.completed','Account verification schema added',accountVerificationReport);
 if (accountLifecycleReport) logger.event('info','database.migration.completed','Account lifecycle and security schema added',accountLifecycleReport);
+if (relationalCreditsReport) logger.event('info','database.migration.completed','Relational people, credits, and networks added',relationalCreditsReport);
 }
 startupMigrationsComplete = true;
 
-module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport,productionStatusDefaultReport,accountVerificationReport,accountLifecycleReport };
+module.exports = { database, DATABASE_FILE, BACKUP_DIR, EXPORT_DIR, createBackup, migrationReport, countryMigrationReport, auditMigrationReport, ratingMigrationReport, watchSourceMigrationReport, indianRatingMigrationReport, watchDataMigrationReport, watchTimeMigrationReport, genreMigrationReport, subtypeMigrationReport,episodeWatchMigrationReport,productionCompanyMigrationReport,fullTextMigrationReport,legacyColumnMigrationReport,seriesChronologyMigrationReport,seriesNetworkMigrationReport,singleRatingMigrationReport,voiceCastMigrationReport,animationSubtypeMigrationReport,textWhitespaceMigrationReport,watchSourceProviderMigrationReport,presentationFormMigrationReport,seriesStructureTitleMigrationReport,productionCompanyAliasMigrationReport,productionCompanyFullNameMigrationReport,seriesEditorialMetadataMigrationReport,seasonCompletionStatusMigrationReport,lifecycleStatusMigrationReport,endedSeriesLifecycleMigrationReport,legacyStatusRemovalReport,productionStatusNormalizationReport,filmingProductionLabelReport,regularSeriesSubtypeReport,bcp47LanguageReport,requiredWatchLanguageReport,shriKrishnaViewingLanguageReport,accountArchitectureReport,relationalMetadataReport,metadataJsonRemovalReport,productionStatusDefaultReport,accountVerificationReport,accountLifecycleReport,relationalCreditsReport };
