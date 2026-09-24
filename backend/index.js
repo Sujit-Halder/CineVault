@@ -4,7 +4,6 @@ const path = require('path');
 const cors = require('cors');
 require('dotenv').config();
 const routes = require('./routes');
-const { migrationReport } = require('./database');
 const logger = require('./logger');
 const { requestLogging, unhandledErrorLogging } = require('./request-logging');
 const security=require('./security');
@@ -91,13 +90,12 @@ app.get('/api', (req, res) => {
 app.use('/api', routes);
 app.use(unhandledErrorLogging);
 
-// Starts the API after the database schema and legacy import are ready.
+// Starts the API after the consolidated relational schema is ready.
 app.listen(PORT, () => {
     fs.mkdirSync(runtimeDataDirectory,{ recursive:true });
     fs.writeFileSync(serverLockFile,JSON.stringify({ pid:process.pid,startedAt:new Date().toISOString() }));
     logger.event('info', 'application.started', 'CineVault API started', { port:Number(PORT), environment:process.env.NODE_ENV || 'development' });
     Model.recordAudit('system.started','system',null,{ port:Number(PORT),environment:process.env.NODE_ENV || 'development' },{ actor:'system' });
-    if (migrationReport) logger.event('info', 'database.legacy_migration.completed', 'Legacy data migration completed', migrationReport);
 });
 
 let shutdownRecorded=false;

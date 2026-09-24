@@ -622,14 +622,6 @@ function replaceSeriesStructure(seriesId, seasons = []) {
     });
 }
 
-// Replaces ordered whole-series credits while preserving movie directors separately.
-function replaceSeriesCredits(seriesId,credits=[]) {
-    database.prepare('DELETE FROM series_credits WHERE series_id=?').run(seriesId);
-    const now=new Date().toISOString();
-    const insert=database.prepare('INSERT INTO series_credits(id,series_id,person_name,role,display_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?)');
-    credits.forEach((credit,index) => insert.run(credit.id || crypto.randomUUID(),seriesId,credit.name,credit.role,index,now,now));
-}
-
 // Replaces normalized title credits and networks while retaining temporary rollback projections.
 function replaceRelationalCredits(contentId,item) {
     database.prepare('DELETE FROM content_credits WHERE content_id=?').run(contentId);

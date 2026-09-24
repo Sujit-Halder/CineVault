@@ -32,9 +32,7 @@ function payload(overrides = {}) {
 }
 
 test('schema migrations and rating normalization use the current model',() => {
-    assert.ok(database.prepare('SELECT 1 FROM schema_migrations WHERE version=24').get());
-    assert.ok(database.prepare('SELECT 1 FROM schema_migrations WHERE version=29').get());
-    assert.ok(database.prepare('SELECT 1 FROM schema_migrations WHERE version=30').get());
+    assert.equal(database.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,46);
     assert.deepEqual(database.prepare('PRAGMA table_info(content_items)').all().filter((column) => ['watch_date','source_reference'].includes(column.name)),[]);
     assert.deepEqual(database.prepare('PRAGMA table_info(content_items)').all().filter((column) => column.name.endsWith('_json')),[]);
     const item = Model.addContent(payload({ title:'  Normalized rating  ',originalTitle:'  Original  ',subtype:'Animated Feature',director:'  Director  ',casts:'  First   Performer(V) ,  Second Performer (v)  ,, ',productionCompany:'  Test Studio  ',summary:'  Summary text  ',genres:['Fantasy'],presentationForms:['Animation'],contentRatings:[{ territory:'IN',code:'A' },{ territory:'IND',code:'U/A' }] }));

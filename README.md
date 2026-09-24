@@ -161,7 +161,35 @@ Content
 
 Account identity and library ownership are relational. `app_users` stores salted scrypt password hashes and roles; `auth_sessions`, `auth_invitations`, and `password_reset_tokens` store only one-way token hashes and expirations. `library_entries` represents each user's saved title state, while `content_items.owner_user_id` enforces the isolated-library boundary.
 
-Repeatable metadata is relational: `metadata_terms` + `content_metadata_terms` cover genres, presentation forms, awards, and tags; dedicated tables store original-production languages, origin countries, complete official-rating provenance, and watching sources. Production companies, series credits, seasons, episodes, viewing events, and content links also use dedicated related tables. Runtime hydration, strict filters, statistics, Data Health, imports, and exports are assembled with SQL queries. Schema migration 41 verifies row-for-row parity, creates a verified backup, and removes the superseded metadata JSON columns.
+Repeatable metadata is relational: `metadata_terms` + `content_metadata_terms` cover genres, presentation forms, awards, and tags; dedicated tables store original-production languages, origin countries, complete official-rating provenance, and watching sources. People, title credits, episode credits, production companies, networks, seasons, episodes, viewing events, and content links use dedicated related tables. Runtime hydration, strict filters, statistics, Data Health, imports, and exports are assembled with SQL queries. The repository now starts directly from the consolidated schema 46 baseline; historical migration-only converters are no longer included.
+
+### Relational schema map
+
+```mermaid
+erDiagram
+    APP_USERS ||--o{ LIBRARY_ENTRIES : owns
+    APP_USERS ||--o{ CONTENT_ITEMS : creates
+    CONTENT_ITEMS ||--o{ SEASONS : contains
+    SEASONS ||--o{ EPISODES : contains
+    CONTENT_ITEMS ||--o{ WATCH_HISTORY : records
+    EPISODES ||--o{ EPISODE_WATCH_HISTORY : records
+    CONTENT_ITEMS ||--o{ CONTENT_CREDITS : credits
+    PEOPLE ||--o{ CONTENT_CREDITS : receives
+    EPISODES ||--o{ EPISODE_CREDITS : credits
+    PEOPLE ||--o{ EPISODE_CREDITS : receives
+    CONTENT_ITEMS ||--o{ CONTENT_NETWORKS : distributed_by
+    NETWORKS ||--o{ CONTENT_NETWORKS : identifies
+    CONTENT_ITEMS ||--o{ CONTENT_METADATA_TERMS : classifies
+    METADATA_TERMS ||--o{ CONTENT_METADATA_TERMS : defines
+    CONTENT_ITEMS ||--o{ CONTENT_LANGUAGES : uses
+    CONTENT_ITEMS ||--o{ CONTENT_COUNTRIES : originates_in
+    CONTENT_ITEMS ||--o{ CONTENT_OFFICIAL_RATINGS : classified_by
+    CONTENT_ITEMS ||--o{ CONTENT_WATCH_SOURCES : watched_via
+    CONTENT_ITEMS ||--o{ CONTENT_PRODUCTION_COMPANIES : produced_by
+    PRODUCTION_COMPANIES ||--o{ CONTENT_PRODUCTION_COMPANIES : identifies
+    CONTENT_ITEMS ||--o{ CONTENT_LINKS : located_at
+    CONTENT_ITEMS ||--o{ NOTIFICATIONS : reports
+```
 
 ### Lifecycle and credits
 
@@ -223,7 +251,9 @@ Production companies use canonical relational records plus searchable aliases an
 
 Primary library tables include `content_items`, `library_entries`, `seasons`, `episodes`, `watch_history`, `episode_watch_history`, `content_links`, `metadata_terms`, `content_metadata_terms`, `content_languages`, `content_countries`, `content_official_ratings`, `content_watch_sources`, `production_companies`, `production_company_aliases`, and `content_production_companies`. People, title-level credits, episode directors, and series networks are normalized through `people`, `content_credits`, `episode_credits`, `networks`, and `content_networks`; the superseded comma-separated credit/network columns and `series_credits` table are removed after verified migration parity. Operational and security tables include `app_users`, `auth_sessions`, `auth_invitations`, `password_reset_tokens`, `account_deletion_challenges`, `ownership_transfer_challenges`, `security_rate_limits`, `notifications`, `asset_checks`, `audit_log`, and `schema_migrations`. SQLite FTS5 maintains the `content_search` index and its internal support tables.
 
-Schema migration 46 is the relational credit cutover. Before removing any superseded projection, startup verifies every director, cast member, episode director, series credit, and network against its relational row and creates an integrity-checked `pre-credit-column-removal` backup. A mismatch aborts the migration without dropping data.
+Schema 46 is the maintained relational baseline. The completed cutover verified every director, cast member, episode director, series credit, and network before removing its superseded projection, and both maintained installations were confirmed at version 46 before the historical converters were retired.
+
+> **Database compatibility:** this code expects a schema-46 database. To recover a database older than version 46, first open a copy with the matching older CineVault release and complete its migrations, verify integrity, and only then use the current release. Never point the consolidated baseline directly at an unverified pre-46 database.
 
 ## 🗄️ Storage, backup, and disaster recovery
 
@@ -1106,7 +1136,7 @@ For operational diagnosis, start with the visible error, its `X-Request-Id`, Act
 ```text
 Movie-Tracker/
 ├── backend/
-│   ├── database.js          # schema, first import, backup support
+│   ├── database.js          # consolidated schema 46 and backup support
 │   ├── model.js             # repository and domain persistence
 │   ├── controller.js        # HTTP request handlers
 │   ├── catalogs.js          # maintained selection catalogs
@@ -1116,7 +1146,7 @@ Movie-Tracker/
 │   ├── logs/                # ignored structured operational logs
 │   └── data/                # ignored runtime state; starts with the live SQLite database only
 │       ├── backups/         # created lazily by backup or protected data-changing operations
-│       └── exports/         # created lazily by JSON export or a genuine legacy import
+│       └── exports/         # created lazily by an explicit server-side JSON export
 ├── frontend/
 │   ├── public/
 │   ├── test/                # state, component, accessibility, and contrast tests
