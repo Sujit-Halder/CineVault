@@ -15,7 +15,7 @@ import { AWARDS, PERSONAL_RATINGS, TAGS } from '../catalogOptions';
 const API = import.meta.env.VITE_API_URL;
 
 // Manages server-backed library queries, editing, pagination, exports, and notifications.
-const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged, onTrashChanged, onLibraryChanged, user }) => {
+const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged, onTrashChanged, onLibraryChanged, onLoadingChange, user }) => {
   const [result, setResult] = useState({ items:[], total:0, page:1, pages:0 });
   const [catalogs, setCatalogs] = useState({ countries:[],languages:[], ratingSystems:[], genres:[],presentationForms:{ movie:[],series:[] },watchSources:[],subtypes:{ movie:[],series:[] },productionCompanies:[],linkDomains:[] });
   const [notifications, setNotifications] = useState([]);
@@ -39,6 +39,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   const [filters, setFilters] = useState({ type:'',subtype:'',productionStatus:'',releaseStatus:'',viewingStatus:'',genres:[],presentationForms:[],languages:[],tags:[],rating:'',awards:[],countries:[],releaseYear:'',productionCompanies:[],watchSources:[],linkDomains:[] });
   const contentTopRef = useRef(null);
   const previousPageRef = useRef(page);
+  const requestSequenceRef = useRef(0);
   const activeFilterCount = Object.values(filters).reduce((count, value) => count + (Array.isArray(value) ? (value.length ? 1 : 0) : (value ? 1 : 0)), 0);
   const exportUnavailable=!focusId && selectedRows.length === 0 && result.total === 0;
 
@@ -80,19 +81,25 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
 
   // Loads the paginated library using the current navigation and query state.
   const loadContent = async () => {
-    if (selectedMenu === 'Notifications' || selectedMenu === 'Statistics' || selectedMenu === 'Data Health' || selectedMenu === 'Activity' || selectedMenu === 'Accounts') return;
+    const requestSequence=++requestSequenceRef.current;
+    if (selectedMenu === 'Notifications' || selectedMenu === 'Statistics' || selectedMenu === 'Data Health' || selectedMenu === 'Activity' || selectedMenu === 'Accounts') {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       if (selectedMenu === 'Library' && focusId) {
         const response=await axios.get(`${API}/api/v1/content/${focusId}`);
-        setResult({ items:[response.data],total:1,page:1,pages:1 });
+        if (requestSequence === requestSequenceRef.current) setResult({ items:[response.data],total:1,page:1,pages:1 });
         return;
       }
       const params=buildViewQuery();
       const response = await axios.get(`${API}/api/v1/content`, { params });
-      setResult(response.data);
-    } catch (error) { notify(error.response?.data?.message || 'The library could not be loaded'); }
-    finally { setLoading(false); }
+      if (requestSequence === requestSequenceRef.current) setResult(response.data);
+    } catch (error) {
+      if (requestSequence === requestSequenceRef.current) notify(error.response?.data?.message || 'The library could not be loaded');
+    }
+    finally { if (requestSequence === requestSequenceRef.current) setLoading(false); }
   };
 
   // Loads metadata catalogs and active asset notifications.
@@ -118,6 +125,7 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   // Library results reload whenever their query inputs change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadContent(); }, [selectedMenu, searchTerm, sort, order, page, filters, focusId]);
+  useEffect(() => { onLoadingChange?.(loading); },[loading,onLoadingChange]);
 
   useEffect(() => {
     setPageInput(String(page));
@@ -282,31 +290,31 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   if (selectedMenu === 'Accounts') return user?.role === 'owner' ? <AccountManagement onClose={() => onNavigate('Library')} /> : <div className="empty-state">Only the CineVault owner can manage accounts.</div>;
 
   return (
-    <section className="content-area" ref={contentTopRef}>
+    <section className={`content-area ${loading ? 'library-is-loading' : ''}`} ref={contentTopRef} aria-busy={loading}>
       {message && <div className="toast" role="status">{message}</div>}
       <div className="library-toolbar">
-        <div><span className="eyebrow">{focusId ? 'FOCUSED ENTRY' : selectedMenu.toUpperCase()}</span><h2>{focusId ? 'Review this title' : `${result.total.toLocaleString()} titles`}</h2></div>
+        <div className="library-heading"><span className="eyebrow">{focusId ? 'FOCUSED ENTRY' : selectedMenu.toUpperCase()}</span><h2>{focusId ? 'Review this title' : loading ? 'Loading titles…' : `${result.total.toLocaleString()} titles`}</h2></div>
         <div className="toolbar-actions">
           {focusId && <button className="secondary-action" onClick={() => { const destination=focusReturnMenu; setFocusId(null); onNavigate(destination); }}>Return to {focusReturnMenu.toLowerCase()}</button>}
-          <button className={`secondary-action filter-trigger ${activeFilterCount ? 'has-filters' : ''}`} onClick={() => setShowFilters(true)}><FaFilter /> Filters{activeFilterCount > 0 && <span>{activeFilterCount}</span>}</button>
-          <button className="secondary-action" title="Cycle between cards, compact cards, and an audit table" onClick={() => changeView(viewMode === 'cards' ? 'compact' : viewMode === 'compact' ? 'table' : 'cards')} aria-label={`Use ${viewMode === 'cards' ? 'compact' : viewMode === 'compact' ? 'table' : 'card'} view`}>{viewMode === 'cards' ? <FaList /> : viewMode === 'compact' ? <FaTable /> : <FaThLarge />} {viewMode === 'cards' ? 'Compact' : viewMode === 'compact' ? 'Table' : 'Cards'}</button>
-          <select aria-label="Sort library" value={sort} onChange={(event) => setSort(event.target.value)}>
+          <button disabled={loading} className={`secondary-action filter-trigger ${activeFilterCount ? 'has-filters' : ''}`} onClick={() => setShowFilters(true)} aria-label={activeFilterCount ? `Filters, ${activeFilterCount} active` : 'Filters'} title={activeFilterCount ? `${activeFilterCount} active filter${activeFilterCount === 1 ? '' : 's'}` : 'Open filters'}><FaFilter /> <span className="action-label">Filters</span>{activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}</button>
+          <button disabled={loading} className="secondary-action" title="Cycle between cards, compact cards, and an audit table" onClick={() => changeView(viewMode === 'cards' ? 'compact' : viewMode === 'compact' ? 'table' : 'cards')} aria-label={`Use ${viewMode === 'cards' ? 'compact' : viewMode === 'compact' ? 'table' : 'card'} view`}>{viewMode === 'cards' ? <FaList /> : viewMode === 'compact' ? <FaTable /> : <FaThLarge />} <span className="action-label">{viewMode === 'cards' ? 'Compact' : viewMode === 'compact' ? 'Table' : 'Cards'}</span></button>
+          <select disabled={loading} aria-label="Sort library" value={sort} onChange={(event) => setSort(event.target.value)}>
             <option value="modification">Recently updated</option><option value="title">Title</option>
             <option value="creation">Creation date</option><option value="watchDate">Watch date and time</option>
             <option value="releaseDate">Release date</option><option value="duration">Runtime</option>
           </select>
-          <select aria-label="Sort direction" value={order} onChange={(event) => setOrder(event.target.value)}>
+          <select disabled={loading} aria-label="Sort direction" value={order} onChange={(event) => setOrder(event.target.value)}>
             <option value="descending">Descending</option><option value="ascending">Ascending</option>
           </select>
-          <span title={exportUnavailable ? 'Nothing can be exported because this view contains no titles' : 'Export the selected rows or every title in this filtered and sorted view'}><button className="secondary-action" disabled={exportUnavailable} onClick={() => setShowExport(true)}><FaDownload /> Export{viewMode === 'table' && selectedRows.length ? ` (${selectedRows.length})` : ''}</button></span>
-          <button className="secondary-action" title="Create and verify a complete SQLite recovery backup in the configured export location" onClick={backupData}><FaDatabase /> Backup</button>
-          {selectedMenu !== 'Trash' && <button className="primary-action" onClick={() => { setEditing(null); setShowForm(true); }}><FaPlus /> Add title</button>}
+          <span title={exportUnavailable ? 'Nothing can be exported because this view contains no titles' : 'Export the selected rows or every title in this filtered and sorted view'}><button className="secondary-action" disabled={loading || exportUnavailable} onClick={() => setShowExport(true)}><FaDownload /> <span className="action-label">Export{viewMode === 'table' && selectedRows.length ? ` (${selectedRows.length})` : ''}</span></button></span>
+          <button disabled={loading} className="secondary-action" title="Create and verify a complete SQLite recovery backup in the configured export location" onClick={backupData}><FaDatabase /> <span className="action-label">Backup</span></button>
+          {selectedMenu !== 'Trash' && <button disabled={loading} className="primary-action mobile-add-action" aria-label="Add a title" title="Add a title" onClick={() => { setEditing(null); setShowForm(true); }}><FaPlus /> <span className="action-label">Add title</span></button>}
         </div>
       </div>
-      {loading ? <div className="empty-state">Loading your library…</div> : result.items.length === 0 ? <div className="empty-state">No titles match this view.</div> : (
+      {loading ? <div className="library-loading" role="status"><span className="loading-reel" aria-hidden="true"/><strong>Loading {selectedMenu.toLowerCase()}</strong><small>Preparing the latest titles and totals…</small><div className="loading-lines" aria-hidden="true"><i/><i/><i/></div></div> : result.items.length === 0 ? <div className="empty-state">No titles match this view.</div> : (
         viewMode === 'table' ? <LibraryTable items={result.items} selected={selectedRows} onSelectionChange={setSelectedRows} onEdit={editItem} onBulkUpdate={bulkUpdate} allowEditing={selectedMenu !== 'Trash'} /> : <div className={`card-grid ${viewMode === 'compact' ? 'compact-grid' : ''}`}>{result.items.map((item) => <MovieCard key={item.id} movieData={item} catalogs={catalogs} trashed={selectedMenu === 'Trash'} onEdit={() => editItem(item)} onDelete={() => deleteItem(item)} onToggleFavorite={() => toggleFavorite(item)} onRestore={() => restoreItem(item)} onPermanentDelete={() => permanentlyDeleteItem(item)} />)}</div>
       )}
-      {result.pages > 1 && <div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {result.pages}</span><form className="page-jump" onSubmit={goToPage}><label htmlFor="page-number">Go to</label><input id="page-number" type="number" min="1" max={result.pages} value={pageInput} onChange={(event) => setPageInput(event.target.value)} /><button type="submit">Go</button></form><button disabled={page === result.pages} onClick={() => setPage((value) => value + 1)}>Next</button></div>}
+      {!loading && result.pages > 1 && <div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {result.pages}</span><form className="page-jump" onSubmit={goToPage}><label htmlFor="page-number">Go to</label><input id="page-number" type="number" min="1" max={result.pages} value={pageInput} onChange={(event) => setPageInput(event.target.value)} /><button type="submit">Go</button></form><button disabled={page === result.pages} onClick={() => setPage((value) => value + 1)}>Next</button></div>}
       {showForm && <MovieForm initialData={editing} catalogs={catalogs} onClose={closeEditor} onSubmit={saveItem} />}
       {restoreConflict && <div className="modal-backdrop" role="presentation"><section className="conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="restore-conflict-title"><span className="eyebrow">RESTORE CONFLICT</span><h2 id="restore-conflict-title">An active entry already matches</h2><p><strong>{restoreConflict.conflict.title}</strong> has the same type and release date as the trashed entry.</p><dl><div><dt>Cancel</dt><dd>Keep both entries unchanged.</dd></div><div><dt>Replace</dt><dd>Restore this entry and move the currently active one to Trash.</dd></div><div><dt>Merge</dt><dd>Combine metadata, watch history, and content links into the active entry.</dd></div></dl><div className="modal-actions"><button type="button" onClick={() => setRestoreConflict(null)}>Cancel</button><button type="button" onClick={() => resolveRestoreConflict('replace')}>Replace</button><button type="button" className="primary-action" onClick={() => resolveRestoreConflict('merge')}>Merge</button></div></section></div>}
       {showExport && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => !exporting && event.target === event.currentTarget && setShowExport(false)}><section className="conflict-dialog export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title"><span className="eyebrow">PORTABLE DATA</span><h2 id="export-title">Choose export format</h2><p>{focusId ? 'The currently focused title will be exported.' : viewMode === 'table' && selectedRows.length ? `${selectedRows.length} selected title${selectedRows.length === 1 ? '' : 's'} across table pages will be exported.` : `All ${result.total.toLocaleString()} titles matching the current ${selectedMenu.toLowerCase()} view, search, filters, and sorting will be exported.`} Titles exported from Trash are restored to the active library when imported.</p><label className="export-choice"><input disabled={exporting} type="radio" name="export-format" value="complete" checked={exportFormat === 'complete'} onChange={() => setExportFormat('complete')} /><span><strong>Complete recovery export</strong><small>Retains internal IDs, timestamps, relationships, and every title detail for the closest possible reconstruction.</small></span></label><label className="export-choice"><input disabled={exporting} type="radio" name="export-format" value="clean" checked={exportFormat === 'clean'} onChange={() => setExportFormat('clean')} /><span><strong>Clean transferable export</strong><small>Retains every movie, series, season, episode, source, link, and watch record while omitting database IDs and internal timestamps.</small></span></label><div className="modal-actions"><button type="button" disabled={exporting} onClick={() => setShowExport(false)}>Cancel</button><button type="button" className="primary-action" aria-busy={exporting} disabled={exportUnavailable || exporting} onClick={exportData}><FaDownload /> {exporting ? 'Preparing export…' : 'Download export'}</button></div></section></div>}

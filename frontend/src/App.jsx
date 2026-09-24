@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import Header from './components/Header';
 import Navbar from './components/Navbar';
@@ -22,6 +22,8 @@ function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('cinevault-theme') || 'dark');
   const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('cinevault-font') || 'modern');
   const [authentication,setAuthentication]=useState({ loading:true,authenticated:false });
+  const [libraryBusy,setLibraryBusy]=useState(true);
+  const handleLibraryLoading=useCallback((busy) => setLibraryBusy(busy),[]);
 
   useEffect(() => {
     const refreshAuthentication=() => axios.get(`${API}/api/auth/status`).then((response) => {
@@ -65,8 +67,8 @@ function App() {
   return (
     <div className="app-shell">
       <Header theme={theme} fontFamily={fontFamily} onThemeChange={setTheme} onFontChange={setFontFamily} onNavigate={setSelectedMenu} selectedMenu={selectedMenu} trashSignal={trashSignal} librarySignal={librarySignal} user={authentication.user} onSignedOut={() => { sessionStorage.removeItem('cinevault-csrf'); setAuthentication({ loading:false,authenticated:false,setupRequired:false }); }} />
-      <Navbar menu={setSelectedMenu} onSearch={setSearchTerm} selectedMenu={selectedMenu} notificationSignal={notificationSignal} />
-      <main><Content user={authentication.user} selectedMenu={selectedMenu} searchTerm={searchTerm} onNavigate={setSelectedMenu} onNotificationsChanged={() => setNotificationSignal((value) => value + 1)} onTrashChanged={() => setTrashSignal((value) => value + 1)} onLibraryChanged={() => setLibrarySignal((value) => value + 1)} /></main>
+      <Navbar menu={setSelectedMenu} onSearch={setSearchTerm} selectedMenu={selectedMenu} notificationSignal={notificationSignal} busy={libraryBusy} />
+      <main><Content user={authentication.user} selectedMenu={selectedMenu} searchTerm={searchTerm} onNavigate={setSelectedMenu} onNotificationsChanged={() => setNotificationSignal((value) => value + 1)} onTrashChanged={() => setTrashSignal((value) => value + 1)} onLibraryChanged={() => setLibrarySignal((value) => value + 1)} onLoadingChange={handleLibraryLoading} /></main>
       <Footer />
     </div>
   );
