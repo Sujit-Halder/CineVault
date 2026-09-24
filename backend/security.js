@@ -133,11 +133,12 @@ function setup(req,res) {
 // Authenticates one active account by email address and password.
 function login(req,res) {
     try {
-        const email=normalizeEmail(req.body?.email); const user=database.prepare("SELECT * FROM app_users WHERE email=? COLLATE NOCASE AND status='active'").get(email);
+        const email=normalizeEmail(req.body?.email); const user=database.prepare('SELECT * FROM app_users WHERE email=? COLLATE NOCASE').get(email);
         enforceSecurityRate('login',`${req.ip || 'local'}:${email}`,10,15);
         if (!user) throw Object.assign(new Error('Email or password is incorrect'),{ status:401 });
         const supplied=Buffer.from(passwordHash(req.body?.password,user.password_salt),'hex'); const expected=Buffer.from(user.password_hash,'hex');
         if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied,expected)) throw Object.assign(new Error('Email or password is incorrect'),{ status:401 });
+        if (user.status === 'disabled') throw Object.assign(new Error('Your CineVault account is disabled. Ask the CineVault owner to activate it before signing in.'),{ status:403 });
         const now=new Date().toISOString(); database.prepare('UPDATE app_users SET last_login_at=?,updated_at=? WHERE id=?').run(now,now,user.id);
         return establishSession(req,res,{ id:user.id,email:user.email,displayName:user.display_name,role:user.role });
     } catch(error) { recordSecurity('auth.login-failed',req,'failure',{ reason:error.message }); return res.status(error.status || 400).json({ message:error.message }); }
@@ -340,9 +341,9 @@ async function confirmOwnershipTransfer(req,res) {
         const challenge=database.prepare('SELECT * FROM ownership_transfer_challenges WHERE owner_user_id=?').get(req.authenticatedUserId); const code=String(req.body?.verificationCode || '').trim();
         if (!challenge || challenge.expires_at <= new Date().toISOString() || tokenHash(`${req.authenticatedUserId}:${challenge.target_user_id}:${code}`) !== challenge.otp_hash) throw Object.assign(new Error('The ownership-transfer code is incorrect or expired'),{ status:400 });
         const target=database.prepare("SELECT * FROM app_users WHERE id=? AND status='active'").get(challenge.target_user_id); if (!target) throw Object.assign(new Error('The selected member is no longer active'),{ status:409 }); const now=new Date().toISOString();
-        database.exec('BEGIN IMMEDIATE'); try { database.prepare("UPDATE app_users SET role='member',updated_at=? WHERE id=?").run(now,req.authenticatedUserId); database.prepare("UPDATE app_users SET role='owner',updated_at=? WHERE id=?").run(now,target.id); database.prepare('DELETE FROM ownership_transfer_challenges WHERE owner_user_id=?').run(req.authenticatedUserId); database.prepare('DELETE FROM auth_sessions WHERE user_id IN (?,?)').run(req.authenticatedUserId,target.id); database.exec('COMMIT'); } catch(error) { database.exec('ROLLBACK'); throw error; }
+        database.exec('BEGIN IMMEDIATE'); try { database.prepare("UPDATE app_users SET role='member',updated_at=? WHERE id=?").run(now,req.authenticatedUserId); database.prepare("UPDATE app_users SET role='owner',updated_at=? WHERE id=?").run(now,target.id); database.prepare('DELETE FROM ownership_transfer_challenges WHERE owner_user_id=?').run(req.authenticatedUserId); database.prepare('DELETE FROM auth_sessions WHERE user_id=?').run(req.authenticatedUserId); database.exec('COMMIT'); } catch(error) { database.exec('ROLLBACK'); throw error; }
         await Promise.allSettled([sendAccountNotice({ to:req.authenticatedAccount.email,subject:'CineVault ownership transferred',heading:'Ownership transfer completed',message:`CineVault transferred ownership to ${target.display_name} (${target.email}).` }),sendAccountNotice({ to:target.email,subject:'You now own CineVault',heading:'Ownership transfer completed',message:'CineVault has assigned this account the owner role.' })]);
-        recordSecurity('auth.ownership-transferred',req,'success',{ targetEmail:target.email },req.authenticatedAccount); return res.json({ message:`Ownership transferred to ${target.display_name}. Sign in again to refresh account permissions.` });
+        recordSecurity('auth.ownership-transferred',req,'success',{ targetEmail:target.email },req.authenticatedAccount); return res.json({ message:`Ownership transferred to ${target.display_name}. Their open CineVault session will receive owner access when refreshed.` });
     } catch(error) { return res.status(error.status || 500).json({ message:error.message || 'Ownership transfer could not be completed' }); }
 }
 

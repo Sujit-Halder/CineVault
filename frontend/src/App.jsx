@@ -23,7 +23,16 @@ function App() {
   const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('cinevault-font') || 'modern');
   const [authentication,setAuthentication]=useState({ loading:true,authenticated:false });
 
-  useEffect(() => { axios.get(`${API}/api/auth/status`).then((response) => { if (response.data.csrf) sessionStorage.setItem('cinevault-csrf',response.data.csrf); setAuthentication({ loading:false,...response.data }); }).catch(() => setAuthentication({ loading:false,authenticated:false,setupRequired:false })); },[]);
+  useEffect(() => {
+    const refreshAuthentication=() => axios.get(`${API}/api/auth/status`).then((response) => {
+      if (response.data.csrf) sessionStorage.setItem('cinevault-csrf',response.data.csrf);
+      setAuthentication({ loading:false,...response.data });
+    }).catch(() => setAuthentication({ loading:false,authenticated:false,setupRequired:false }));
+    refreshAuthentication();
+    const refreshVisibleAccount=() => { if (document.visibilityState === 'visible') refreshAuthentication(); };
+    window.addEventListener('focus',refreshAuthentication); document.addEventListener('visibilitychange',refreshVisibleAccount);
+    return () => { window.removeEventListener('focus',refreshAuthentication); document.removeEventListener('visibilitychange',refreshVisibleAccount); };
+  },[]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;

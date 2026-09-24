@@ -33,6 +33,18 @@ test('authentication rejects missing sessions and incorrect account passwords',(
     assert.equal(security.validPassword('test-only-password'),true);
 });
 
+test('disabled accounts receive activation guidance only after correct credentials',() => {
+    const owner=database.prepare("SELECT * FROM app_users WHERE role='owner'").get();
+    const now=new Date().toISOString();
+    database.prepare(`INSERT INTO app_users(id,email,display_name,password_hash,password_salt,role,status,created_at,updated_at)
+        VALUES(?,?,?,?,?,'member','disabled',?,?)`).run('disabled-member','disabled@example.com','Disabled Member',owner.password_hash,owner.password_salt,now,now);
+    const incorrect=response(); security.login({ body:{ email:'disabled@example.com',password:'wrong' },headers:{} },incorrect);
+    assert.equal(incorrect.code,401); assert.equal(incorrect.body.message,'Email or password is incorrect');
+    const correct=response(); security.login({ body:{ email:'disabled@example.com',password:'StrongPass123' },headers:{} },correct);
+    assert.equal(correct.code,403);
+    assert.equal(correct.body.message,'Your CineVault account is disabled. Ask the CineVault owner to activate it before signing in.');
+});
+
 test('authenticated mutations require the persisted session CSRF token',() => {
     const loggedIn=response(); security.login({ body:{ email:'owner@outlook.com',password:'StrongPass123' },headers:{} },loggedIn);
     const cookie=loggedIn.headers['Set-Cookie'].map((value) => value.split(';')[0]).join('; ');
@@ -80,8 +92,15 @@ test('account archive has an integrity checksum and scheduled deletion is recove
 
 test('ownership transfer atomically changes both roles',async () => {
     const owner=database.prepare("SELECT * FROM app_users WHERE role='owner'").get(); const member=database.prepare("SELECT * FROM app_users WHERE email='archive@example.com'").get(); const code='345678';
+    const memberToken='promoted-owner-session'; const now=new Date().toISOString();
+    database.prepare('INSERT INTO auth_sessions(token_hash,user_id,csrf_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)')
+        .run(crypto.createHash('sha256').update(memberToken).digest('hex'),member.id,'csrf',now,new Date(Date.now()+3600000).toISOString(),now);
     database.prepare('INSERT INTO ownership_transfer_challenges(owner_user_id,target_user_id,otp_hash,expires_at,attempts,created_at) VALUES(?,?,?,?,0,?)')
         .run(owner.id,member.id,crypto.createHash('sha256').update(`${owner.id}:${member.id}:${code}`).digest('hex'),new Date(Date.now()+600000).toISOString(),new Date().toISOString());
     const result=response(); await security.confirmOwnershipTransfer({ body:{ verificationCode:code },authenticatedUserId:owner.id,authenticatedAccount:{ id:owner.id,email:owner.email,displayName:owner.display_name,role:'owner' },headers:{} },result);
     assert.equal(result.code,200); assert.equal(database.prepare('SELECT role FROM app_users WHERE id=?').get(member.id).role,'owner'); assert.equal(database.prepare('SELECT role FROM app_users WHERE id=?').get(owner.id).role,'member');
+    const promotedStatus=response(); security.status({ headers:{ cookie:`cinevault_session=${memberToken}` } },promotedStatus);
+    assert.equal(promotedStatus.body.authenticated,true); assert.equal(promotedStatus.body.user.role,'owner');
+    const accounts=response(); security.listAccounts({ authenticatedAccount:promotedStatus.body.user },accounts);
+    assert.equal(accounts.code,200); assert.ok(Array.isArray(accounts.body.users));
 });
