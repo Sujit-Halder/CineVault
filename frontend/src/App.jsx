@@ -19,6 +19,7 @@ function App() {
   const [notificationSignal, setNotificationSignal] = useState(0);
   const [trashSignal,setTrashSignal] = useState(0);
   const [librarySignal,setLibrarySignal]=useState(0);
+  const [focusRequest,setFocusRequest]=useState(null);
   const [theme, setTheme] = useState(() => localStorage.getItem('cinevault-theme') || 'dark');
   const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('cinevault-font') || 'modern');
   const [authentication,setAuthentication]=useState({ loading:true,authenticated:false });
@@ -66,9 +67,9 @@ function App() {
   if (hasAccountAction || !authentication.authenticated) return <Login setupRequired={authentication.setupRequired} onAuthenticated={(result) => setAuthentication({ loading:false,...result })} />;
   return (
     <div className="app-shell">
-      <Header theme={theme} fontFamily={fontFamily} onThemeChange={setTheme} onFontChange={setFontFamily} onNavigate={setSelectedMenu} selectedMenu={selectedMenu} trashSignal={trashSignal} librarySignal={librarySignal} user={authentication.user} onSignedOut={() => { sessionStorage.removeItem('cinevault-csrf'); setAuthentication({ loading:false,authenticated:false,setupRequired:false }); }} />
+      <Header theme={theme} fontFamily={fontFamily} onThemeChange={setTheme} onFontChange={setFontFamily} onNavigate={setSelectedMenu} onOpenTitle={(id) => { setSelectedMenu('Library'); setFocusRequest({ id,requestedAt:Date.now() }); }} selectedMenu={selectedMenu} trashSignal={trashSignal} librarySignal={librarySignal} user={authentication.user} onSignedOut={() => { sessionStorage.removeItem('cinevault-csrf'); setAuthentication({ loading:false,authenticated:false,setupRequired:false }); }} />
       <Navbar menu={setSelectedMenu} onSearch={setSearchTerm} selectedMenu={selectedMenu} notificationSignal={notificationSignal} busy={libraryBusy} />
-      <main><Content user={authentication.user} selectedMenu={selectedMenu} searchTerm={searchTerm} onNavigate={setSelectedMenu} onNotificationsChanged={() => setNotificationSignal((value) => value + 1)} onTrashChanged={() => setTrashSignal((value) => value + 1)} onLibraryChanged={() => setLibrarySignal((value) => value + 1)} onLoadingChange={handleLibraryLoading} /></main>
+      <main><Content user={authentication.user} selectedMenu={selectedMenu} searchTerm={searchTerm} focusRequest={focusRequest} onNavigate={setSelectedMenu} onNotificationsChanged={() => setNotificationSignal((value) => value + 1)} onTrashChanged={() => setTrashSignal((value) => value + 1)} onLibraryChanged={() => setLibrarySignal((value) => value + 1)} onLoadingChange={handleLibraryLoading} /></main>
       <Footer />
     </div>
   );

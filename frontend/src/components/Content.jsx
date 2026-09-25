@@ -15,7 +15,7 @@ import { AWARDS, PERSONAL_RATINGS, TAGS } from '../catalogOptions';
 const API = import.meta.env.VITE_API_URL;
 
 // Manages server-backed library queries, editing, pagination, exports, and notifications.
-const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged, onTrashChanged, onLibraryChanged, onLoadingChange, user }) => {
+const Content = ({ selectedMenu, searchTerm, focusRequest, onNavigate, onNotificationsChanged, onTrashChanged, onLibraryChanged, onLoadingChange, user }) => {
   const [result, setResult] = useState({ items:[], total:0, page:1, pages:0 });
   const [catalogs, setCatalogs] = useState({ countries:[],languages:[], ratingSystems:[], genres:[],presentationForms:{ movie:[],series:[] },watchSources:[],subtypes:{ movie:[],series:[] },productionCompanies:[],linkDomains:[] });
   const [notifications, setNotifications] = useState([]);
@@ -125,6 +125,15 @@ const Content = ({ selectedMenu, searchTerm, onNavigate, onNotificationsChanged,
   // Library results reload whenever their query inputs change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadContent(); }, [selectedMenu, searchTerm, sort, order, page, filters, focusId]);
+
+  // Opens a title requested by another application surface as a focused library entry.
+  useEffect(() => {
+    if (!focusRequest?.id) return;
+    setFocusReturnMenu('Library');
+    setFocusId(focusRequest.id);
+    setPage(1);
+    window.scrollTo({ top:0,behavior:'smooth' });
+  },[focusRequest]);
   useEffect(() => { onLoadingChange?.(loading); },[loading,onLoadingChange]);
 
   useEffect(() => {

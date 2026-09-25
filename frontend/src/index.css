@@ -35,8 +35,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .anniversary-track>span { flex:none; display:flex; align-items:center; white-space:nowrap; padding-right:2.25rem; animation:anniversary-scroll 26s linear infinite; }
 .anniversary-track b { margin-right:.28rem; color:#d49352; }
 .anniversary-track em { margin-inline:.28rem; color:inherit; font-style:normal; font-weight:750; }
+.anniversary-title { margin-inline:.28rem; padding:.08rem .25rem; border:0; border-radius:.35rem; color:inherit; background:transparent; font:inherit; font-style:normal; font-weight:750; line-height:inherit; cursor:pointer; transition:color .18s ease,background-color .18s ease,transform .18s ease; }
+.anniversary-title:hover { color:var(--text); background:color-mix(in srgb,#d49352 18%,transparent); transform:translateY(-1px); }
+.anniversary-title:focus-visible { color:var(--text); background:color-mix(in srgb,#d49352 22%,transparent); outline:2px solid #d49352; outline-offset:2px; }
 .anniversary-track i { margin:0 1.1rem; color:#d49352; font-size:.48rem; font-style:normal; opacity:.7; }
-.anniversary-ticker:hover .anniversary-track>span { animation-play-state:paused; }
+.anniversary-ticker:hover .anniversary-track>span,.anniversary-ticker:focus-within .anniversary-track>span { animation-play-state:paused; }
 @keyframes anniversary-scroll { to { transform:translateX(-100%); } }
 [aria-busy="true"] { cursor:progress; }
 button[aria-busy="true"]::before,.is-busy::before { content:''; width:.8rem; height:.8rem; flex:none; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:busy-spin .75s linear infinite; }
