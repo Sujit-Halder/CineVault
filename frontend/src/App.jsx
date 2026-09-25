@@ -8,7 +8,7 @@ import Login from './components/Login';
 
 const API = import.meta.env.VITE_API_URL;
 axios.defaults.withCredentials=true;
-axios.interceptors.request.use((config) => { const csrf=sessionStorage.getItem('cinevault-csrf'); if (csrf && !['get','head','options'].includes(config.method)) config.headers['X-CSRF-Token']=csrf; return config; });
+axios.interceptors.request.use((config) => { const csrf=sessionStorage.getItem('cinevault-csrf'); if (csrf && !['get','head','options'].includes(config.method)) config.headers['X-CSRF-Token']=csrf; config.headers['X-CineVault-Time-Zone']=Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; return config; });
 
 // Coordinates navigation, search, and the notification drawer for the application shell.
 function App() {

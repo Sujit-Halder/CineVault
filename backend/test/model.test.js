@@ -14,6 +14,23 @@ const { database,createBackup } = require('../database');
 const { getCatalogs } = require('../catalogs');
 const { runWithAccount } = require('../request-context');
 
+test('browser timezones control calendar validation and viewing statistics',() => {
+    const watch={ watchedAt:'2025-01-01T00:30:00.000Z',languageTag:'en' };
+    assert.throws(() => runWithAccount(null,() => Model.addContent(payload({
+        title:'Timezone boundary rejected',releaseDate:'2025-01-01',watchHistory:[watch],
+    })),'America/Los_Angeles'),/Watch dates cannot be earlier/);
+    const accepted=runWithAccount(null,() => Model.addContent(payload({
+        title:'Timezone boundary accepted',releaseDate:'2025-01-01',watchHistory:[watch],
+    })),'Asia/Tokyo');
+    const tokyo=runWithAccount(null,() => Model.getStatistics(),'Asia/Tokyo');
+    const losAngeles=runWithAccount(null,() => Model.getStatistics(),'America/Los_Angeles');
+    assert.equal(tokyo.watchActivity['2025-01'],1);
+    assert.equal(losAngeles.watchActivity['2024-12'],1);
+    assert.equal(tokyo.weekdayActivity.Wednesday,1);
+    assert.equal(losAngeles.weekdayActivity.Tuesday,1);
+    database.prepare('DELETE FROM content_items WHERE id=?').run(accepted.id);
+});
+
 // Returns a complete valid payload that individual tests can specialize.
 function payload(overrides = {}) {
     const result={
@@ -260,11 +277,11 @@ test('release and watch chronology rules protect movies and series',() => {
     assert.throws(() => Model.addContent(payload({ title:'Future release',releaseDate:'2999-01-01' })),/Release date cannot be in the future/);
     assert.throws(() => Model.addContent(payload({ title:'Future movie watch',status:'Watched',watchHistory:[{ watchedAt:new Date(Date.now() + 60000).toISOString() }] })),/cannot be in the future/);
     assert.throws(() => Model.addContent(payload({ type:'series',title:'Future episode release',seriesStartDate:'2025-01-01',seriesContinuing:true,seasons:[{ seasonNumber:1,episodes:[{ episodeNumber:1,airDate:'2999-01-01',watchHistory:[] }] }] })),/dates cannot be in the future/);
-    assert.doesNotThrow(() => {
+    assert.doesNotThrow(() => runWithAccount(null,() => {
         const sameDay = Model.addContent(payload({ type:'series',title:'Same local calendar day',seriesStartDate:'2026-09-19',seriesContinuing:true,seasons:[{ seasonNumber:1,episodes:[{ episodeNumber:1,airDate:'2026-09-19',watchHistory:[{ watchedAt:'2026-09-18T18:31:35.069Z' }] }] }] }));
         Model.deleteContent(sameDay.id);
         Model.permanentlyDeleteContent(sameDay.id);
-    });
+    },'Asia/Kolkata'));
 });
 
 test('movie creation, updating, watch history, filters, and title ordering remain stable',() => {

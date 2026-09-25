@@ -17,6 +17,7 @@ const SERIES_CREDIT_ROLES=['Creator','Co-Creator','Developer','Showrunner','Exec
 // Returns the local calendar date represented by a stored date or timestamp.
 const calendarDateValue = (value) => {
   if (!value) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return String(value).slice(0,10);
   const part = (number) => String(number).padStart(2,'0');

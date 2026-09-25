@@ -80,7 +80,7 @@ app.post('/api/auth/mail-delivery',security.mailDeliveryWebhook);
 app.post('/api/auth/logout',security.logout);
 app.post('/api/auth/invitations',security.authentication,security.invite);
 app.use('/api',security.authentication);
-app.use('/api',(req,_res,next) => runWithAccount(req.authenticatedAccount,next));
+app.use('/api',(req,_res,next) => runWithAccount(req.authenticatedAccount,next,req.get('X-CineVault-Time-Zone')));
 
 // Example route
 app.get('/api', (req, res) => {

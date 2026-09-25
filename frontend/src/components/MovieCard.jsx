@@ -14,7 +14,7 @@ function getYouTubeId(url) {
 // Formats an ISO date using the viewer's locale.
 function formatDate(value) {
   if (!value) return '';
-  const date = new Date(value);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T12:00:00`) : new Date(value);
   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle:'medium' }).format(date);
 }
 

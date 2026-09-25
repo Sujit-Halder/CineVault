@@ -6,7 +6,8 @@ const EXPORT_SCHEMA_VERSION=7;
 const { normalizeCountryCodes,normalizeLanguageTags, normalizeContentRatings, normalizeWatchSources, normalizeSubtype,normalizePresentationForms,getCatalogs,EPISODE_TYPES } = require('./catalogs');
 const { normalizeSingleLineText, normalizeCommaSeparatedText, normalizeMultilineText } = require('./text-normalization');
 const { fullCompanyName,companyKey } = require('./company-normalization');
-const { currentAccount }=require('./request-context');
+const { currentAccount,currentTimeZone }=require('./request-context');
+const calendarFormatters=new Map();
 
 // Returns a request-bound ownership predicate while allowing trusted maintenance scripts to operate globally.
 function ownerScope(alias='content_items') {
@@ -142,13 +143,17 @@ function normalizeLinkDomain(domain = '') {
 // Produces a punctuation-insensitive key for reviewable human-name and provider variants.
 function canonicalValueKey(value='') { return normalizeSingleLineText(value).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,''); }
 
-// Returns the calendar date represented by a timestamp in the library's local timezone.
+// Returns the calendar date represented by a timestamp in the active request's timezone.
 function localCalendarDate(value) {
     const date = new Date(value);
     if (Number.isNaN(date.valueOf())) return '';
-    return new Intl.DateTimeFormat('en-CA', {
-        timeZone:process.env.MOVIE_TRACKER_TIME_ZONE || 'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',
-    }).format(date);
+    const timeZone=currentTimeZone();
+    if (!calendarFormatters.has(timeZone)) calendarFormatters.set(timeZone,new Intl.DateTimeFormat('en-US',{
+        timeZone,year:'numeric',month:'2-digit',day:'2-digit',
+    }));
+    const parts=calendarFormatters.get(timeZone).formatToParts(date);
+    const part=(name) => parts.find((entry) => entry.type === name)?.value;
+    return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
 // Verifies that a YYYY-MM-DD value represents a real Gregorian calendar date.
@@ -1089,21 +1094,22 @@ function getStatistics() {
         GROUP BY s.id HAVING COUNT(DISTINCT e.id)>0
             AND COUNT(DISTINCT CASE WHEN eh.id IS NOT NULL THEN e.id END)=COUNT(DISTINCT e.id))`).get(...joinedOwnership.parameters).count;
     const watchActivity = {};
-    database.prepare(`SELECT month,COUNT(*) count FROM (
-        SELECT strftime('%Y-%m',h.watched_at,'localtime') month FROM watch_history h JOIN content_items c ON c.id=h.content_id WHERE c.deleted_at IS NULL AND c.type='movie' AND ${joinedOwnership.sql}
-        UNION ALL SELECT strftime('%Y-%m',eh.watched_at,'localtime') FROM episode_watch_history eh JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id JOIN content_items c ON c.id=s.series_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}
-        ) GROUP BY month ORDER BY month`).all(...joinedOwnership.parameters,...joinedOwnership.parameters)
-        .forEach((row) => { watchActivity[row.month] = row.count; });
     const weekdayActivity = { Monday:0,Tuesday:0,Wednesday:0,Thursday:0,Friday:0,Saturday:0,Sunday:0 };
     const weekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-    database.prepare(`SELECT weekday,COUNT(*) count FROM (
-        SELECT strftime('%w',h.watched_at,'localtime') weekday FROM watch_history h JOIN content_items c ON c.id=h.content_id WHERE c.deleted_at IS NULL AND c.type='movie' AND ${joinedOwnership.sql}
-        UNION ALL SELECT strftime('%w',eh.watched_at,'localtime') FROM episode_watch_history eh JOIN episodes e ON e.id=eh.episode_id JOIN seasons s ON s.id=e.season_id JOIN content_items c ON c.id=s.series_id WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}
-        ) GROUP BY weekday`).all(...joinedOwnership.parameters,...joinedOwnership.parameters)
-        .forEach((row) => { weekdayActivity[weekdayNames[Number(row.weekday)]] = row.count; });
+    database.prepare(`SELECT h.watched_at watched_at FROM watch_history h JOIN content_items c ON c.id=h.content_id
+        WHERE c.deleted_at IS NULL AND c.type='movie' AND ${joinedOwnership.sql}
+        UNION ALL SELECT eh.watched_at FROM episode_watch_history eh JOIN episodes e ON e.id=eh.episode_id
+        JOIN seasons s ON s.id=e.season_id JOIN content_items c ON c.id=s.series_id
+        WHERE c.deleted_at IS NULL AND ${joinedOwnership.sql}`).all(...joinedOwnership.parameters,...joinedOwnership.parameters)
+        .forEach((row) => {
+            const day=localCalendarDate(row.watched_at);
+            if (!day) return;
+            count(watchActivity,day.slice(0,7));
+            weekdayActivity[weekdayNames[new Date(`${day}T00:00:00Z`).getUTCDay()]] += 1;
+        });
     const libraryGrowth = {};
-    database.prepare(`SELECT strftime('%Y-%m',created_at,'localtime') month,COUNT(*) count FROM content_items
-        WHERE deleted_at IS NULL AND ${ownership.sql} GROUP BY month ORDER BY month`).all(...ownership.parameters).forEach((row) => { libraryGrowth[row.month] = row.count; });
+    database.prepare(`SELECT created_at FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql}`).all(...ownership.parameters)
+        .forEach((row) => count(libraryGrowth,localCalendarDate(row.created_at).slice(0,7)));
     const runtimeDistribution = { 'Under 60 min':0,'60–89 min':0,'90–119 min':0,'120–149 min':0,'150+ min':0 };
     rows.forEach((row) => {
         if (row.runtime_minutes == null) return;
@@ -1128,7 +1134,9 @@ function getStatistics() {
     return { generatedAt:new Date().toISOString(),summary:{ total:rows.length,watchedTitles,totalWatchSessions,totalMinutesWatched,
         rewatchedTitles,ratedTitles,linkedTitles,modePersonalRating,topCountries,countries:Object.keys(countries).length,
         episodesWatched,episodeWatchSessions,seriesWatchCycles,rewatchedEpisodes,completedSeasons,completedSeries,partiallyWatchedSeries },
-        types,genres,presentationForms,countries,productionStatuses,releaseStatuses,viewingStatuses,personalRatings,releaseDecades,watchActivity,weekdayActivity,libraryGrowth,runtimeDistribution,
+        types,genres,presentationForms,countries,productionStatuses,releaseStatuses,viewingStatuses,personalRatings,releaseDecades,
+        watchActivity:Object.fromEntries(Object.entries(watchActivity).sort(([a],[b]) => a.localeCompare(b))),weekdayActivity,
+        libraryGrowth:Object.fromEntries(Object.entries(libraryGrowth).sort(([a],[b]) => a.localeCompare(b))),runtimeDistribution,
         sourceMethods,linkDomains,contentRatings,seriesCompletion:{ Completed:completedSeries,'In progress':partiallyWatchedSeries,
             'Not started':Math.max(0,seriesViewing.length - completedSeries - partiallyWatchedSeries) } };
 }

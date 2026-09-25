@@ -69,8 +69,14 @@ function pruneBackups(directory,label,encrypted=false,protectedPath='') {
 
 // Creates the consolidated relational schema used by clean installations and schema-v47 databases.
 function createSchema(database) {
+    database.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
+    database.exec('BEGIN IMMEDIATE');
+    try {
+    database.exec(`DROP TRIGGER IF EXISTS season_lifecycle_insert;
+        DROP TRIGGER IF EXISTS season_lifecycle_update;
+        DROP TRIGGER IF EXISTS episode_released_season_insert;
+        DROP TRIGGER IF EXISTS episode_released_season_update;`);
     database.exec(`
-        PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
         CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS app_users(id TEXT PRIMARY KEY,email TEXT NOT NULL COLLATE NOCASE UNIQUE,display_name TEXT NOT NULL,password_hash TEXT NOT NULL,password_salt TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_login_at TEXT,deletion_scheduled_at TEXT,deletion_requested_at TEXT,CHECK(role IN ('owner','member')),CHECK(status IN ('active','disabled')));
         CREATE TABLE IF NOT EXISTS content_items(id TEXT PRIMARY KEY,type TEXT NOT NULL CHECK(type IN ('movie','series')),subtype TEXT NOT NULL DEFAULT '',title TEXT NOT NULL,original_title TEXT NOT NULL DEFAULT '',release_date TEXT,personal_rating TEXT NOT NULL DEFAULT '',production_company TEXT NOT NULL DEFAULT '',poster_url TEXT NOT NULL DEFAULT '',trailer_url TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',favorite INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT,production_status TEXT NOT NULL DEFAULT 'Announced',release_status TEXT NOT NULL DEFAULT 'Unscheduled',owner_user_id TEXT REFERENCES app_users(id) ON DELETE CASCADE);
@@ -135,21 +141,21 @@ function createSchema(database) {
         CREATE TRIGGER IF NOT EXISTS season_lifecycle_insert BEFORE INSERT ON seasons WHEN
             NOT ((new.release_status='Unscheduled') OR
                 (new.release_status='Upcoming' AND new.production_status IN ('Announced','In Development','Pre-Production','Filming / Production','Post-Production','Completed')) OR
-                (new.release_status IN ('Airing','Released') AND new.production_status='Completed' AND new.release_date IS NOT NULL AND date(new.release_date)<=date('now')) OR
+                (new.release_status IN ('Airing','Released') AND new.production_status='Completed' AND new.release_date IS NOT NULL AND date(new.release_date)<=date('now','+1 day')) OR
                 (new.release_status='Canceled' AND new.production_status IN ('Canceled','Shelved','Completed')))
             BEGIN SELECT RAISE(ABORT,'Season production and release statuses are inconsistent'); END;
         CREATE TRIGGER IF NOT EXISTS season_lifecycle_update BEFORE UPDATE OF production_status,release_status,release_date ON seasons WHEN
             NOT ((new.release_status='Unscheduled') OR
                 (new.release_status='Upcoming' AND new.production_status IN ('Announced','In Development','Pre-Production','Filming / Production','Post-Production','Completed')) OR
-                (new.release_status IN ('Airing','Released') AND new.production_status='Completed' AND new.release_date IS NOT NULL AND date(new.release_date)<=date('now')) OR
+                (new.release_status IN ('Airing','Released') AND new.production_status='Completed' AND new.release_date IS NOT NULL AND date(new.release_date)<=date('now','+1 day')) OR
                 (new.release_status='Canceled' AND new.production_status IN ('Canceled','Shelved','Completed')))
-            OR (EXISTS(SELECT 1 FROM episodes WHERE season_id=old.id) AND NOT (new.production_status='Completed' AND new.release_status IN ('Airing','Released') AND new.release_date IS NOT NULL AND date(new.release_date)<=date('now')))
+            OR (EXISTS(SELECT 1 FROM episodes WHERE season_id=old.id) AND NOT (new.production_status='Completed' AND new.release_status IN ('Airing','Released') AND new.release_date IS NOT NULL AND date(new.release_date)<=date('now','+1 day')))
             BEGIN SELECT RAISE(ABORT,'A season with episodes must be completed in production and airing or released'); END;
         CREATE TRIGGER IF NOT EXISTS episode_released_season_insert BEFORE INSERT ON episodes WHEN NOT EXISTS(
-            SELECT 1 FROM seasons s WHERE s.id=new.season_id AND s.production_status='Completed' AND s.release_status IN ('Airing','Released') AND s.release_date IS NOT NULL AND date(s.release_date)<=date('now'))
+            SELECT 1 FROM seasons s WHERE s.id=new.season_id AND s.production_status='Completed' AND s.release_status IN ('Airing','Released') AND s.release_date IS NOT NULL AND date(s.release_date)<=date('now','+1 day'))
             BEGIN SELECT RAISE(ABORT,'Episodes require a completed season that is airing or released'); END;
         CREATE TRIGGER IF NOT EXISTS episode_released_season_update BEFORE UPDATE OF season_id ON episodes WHEN NOT EXISTS(
-            SELECT 1 FROM seasons s WHERE s.id=new.season_id AND s.production_status='Completed' AND s.release_status IN ('Airing','Released') AND s.release_date IS NOT NULL AND date(s.release_date)<=date('now'))
+            SELECT 1 FROM seasons s WHERE s.id=new.season_id AND s.production_status='Completed' AND s.release_status IN ('Airing','Released') AND s.release_date IS NOT NULL AND date(s.release_date)<=date('now','+1 day'))
             BEGIN SELECT RAISE(ABORT,'Episodes require a completed season that is airing or released'); END;
         CREATE TRIGGER IF NOT EXISTS watch_history_language_required_insert BEFORE INSERT ON watch_history WHEN trim(new.language_tag)='' BEGIN SELECT RAISE(ABORT,'Watch language is required'); END;
         CREATE TRIGGER IF NOT EXISTS watch_history_language_required_update BEFORE UPDATE OF language_tag ON watch_history WHEN trim(new.language_tag)='' BEGIN SELECT RAISE(ABORT,'Watch language is required'); END;
@@ -157,6 +163,8 @@ function createSchema(database) {
         CREATE TRIGGER IF NOT EXISTS episode_watch_language_required_update BEFORE UPDATE OF language_tag ON episode_watch_history WHEN trim(new.language_tag)='' BEGIN SELECT RAISE(ABORT,'Episode watch language is required'); END;
     `);
     database.prepare('INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(48,?)').run(new Date().toISOString());
+    database.exec('COMMIT');
+    } catch(error) { database.exec('ROLLBACK'); throw error; }
 }
 
 // Aligns released season structures with the lifecycle rules enforced by schema 48.

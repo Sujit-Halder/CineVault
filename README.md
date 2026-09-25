@@ -259,15 +259,59 @@ Schema 48 is the maintained relational baseline. The completed cutover verified 
 
 > **Database compatibility:** this code expects schema 48 and supports direct upgrades from schemas 46 and 47. To recover a database older than version 46, first open a copy with the matching older CineVault release and complete its migrations, verify integrity, and only then use the current release. Never point the consolidated baseline directly at an unverified pre-46 database.
 
+### Schema inventory (version 48)
+
+The following are application-owned SQLite tables; `*` marks primary-key columns. Foreign keys and other constraints are defined in `backend/database.js` and its migration helpers. `content_search` is an FTS5 virtual index with SQLite-managed support tables, not another source of truth. `content_items.production_company` is a retained searchable text projection alongside normalized company links; `episodes.watched` and `episodes.watch_date` are stored compatibility summaries, while episode watch events are authoritative.
+
+| Table | Columns |
+|---|---|
+| `app_users` | `id*`, `email`, `display_name`, `password_hash`, `password_salt`, `role`, `status`, `created_at`, `updated_at`, `last_login_at`, `deletion_scheduled_at`, `deletion_requested_at` |
+| `auth_sessions` | `token_hash*`, `user_id`, `csrf_hash`, `created_at`, `expires_at`, `last_seen_at` |
+| `auth_invitations` | `id*`, `email`, `token_hash`, `invited_by`, `expires_at`, `accepted_at`, `created_at`, `verification_hash`, `verification_expires_at`, `verification_sent_at`, `verification_attempts`, `delivery_status`, `delivery_message_id`, `delivery_response` |
+| `password_reset_tokens` | `id*`, `user_id`, `token_hash`, `expires_at`, `used_at`, `created_at` |
+| `account_deletion_challenges` | `user_id*`, `otp_hash`, `expires_at`, `attempts`, `created_at` |
+| `ownership_transfer_challenges` | `owner_user_id*`, `target_user_id`, `otp_hash`, `expires_at`, `attempts`, `created_at` |
+| `security_rate_limits` | `scope*`, `key_hash*`, `window_started_at`, `attempts` |
+| `content_items` | `id*`, `type`, `subtype`, `title`, `original_title`, `release_date`, `personal_rating`, `production_company`, `poster_url`, `trailer_url`, `summary`, `favorite`, `created_at`, `updated_at`, `deleted_at`, `production_status`, `release_status`, `owner_user_id` |
+| `movie_details` | `content_id*`, `runtime_minutes` |
+| `series_details` | `content_id*`, `end_date`, `continuing` |
+| `library_entries` | `id*`, `user_id`, `content_id`, `personal_rating`, `favorite`, `created_at`, `updated_at`, `deleted_at` |
+| `seasons` | `id*`, `series_id`, `season_number`, `title`, `release_date`, `poster_url`, `created_at`, `updated_at`, `synopsis`, `completion_status`, `production_status`, `release_status` |
+| `episodes` | `id*`, `season_id`, `episode_number`, `title`, `air_date`, `runtime_minutes`, `watched`, `watch_date`, `progress_seconds`, `summary`, `created_at`, `updated_at`, `episode_type` |
+| `watch_history` | `id*`, `content_id`, `watched_at`, `created_at`, `updated_at`, `language_tag` |
+| `episode_watch_history` | `id*`, `episode_id`, `watched_at`, `created_at`, `updated_at`, `language_tag` |
+| `content_links` | `id*`, `content_id`, `url`, `domain`, `created_at` |
+| `content_watch_sources` | `id*`, `content_id`, `method`, `provider`, `display_order` |
+| `metadata_terms` | `id*`, `category`, `name`, `created_at` |
+| `content_metadata_terms` | `content_id*`, `term_id*`, `display_order` |
+| `content_languages` | `content_id*`, `language_tag*`, `display_order` |
+| `content_countries` | `content_id*`, `country_code*`, `display_order` |
+| `content_official_ratings` | `content_id*`, `territory*`, `code`, `display_order`, `rating_system`, `previous_code`, `classification_basis`, `classification_confidence` |
+| `people` | `id*`, `name`, `canonical_name`, `created_at` |
+| `content_credits` | `content_id*`, `person_id*`, `role*`, `display_order` |
+| `episode_credits` | `episode_id*`, `person_id*`, `role*`, `display_order` |
+| `networks` | `id*`, `name`, `canonical_name`, `created_at` |
+| `content_networks` | `content_id*`, `network_id*`, `display_order` |
+| `production_companies` | `id*`, `name`, `canonical_name` |
+| `content_production_companies` | `content_id*`, `company_id*` |
+| `production_company_aliases` | `alias*`, `company_id`, `created_at` |
+| `production_company_merge_ignores` | `canonical_name*`, `created_at` |
+| `asset_checks` | `content_id*`, `asset_type*`, `asset_url`, `status`, `last_checked_at`, `last_healthy_at` |
+| `notifications` | `id*`, `content_id`, `asset_type`, `status`, `reason`, `asset_url`, `detected_at`, `read_at`, `resolved_at` |
+| `audit_log` | `id*`, `action`, `entity_type`, `entity_id`, `details_json`, `created_at`, `request_id`, `actor`, `outcome`, `before_json`, `after_json`, `metadata_json` |
+| `schema_migrations` | `version*`, `applied_at` |
+
+Inspect the actual deployed schema with `sqlite3 /var/lib/cinevault/movie-tracker.sqlite '.schema'` on EC2, or use `PRAGMA table_info(table_name);`, `PRAGMA foreign_key_list(table_name);`, and `PRAGMA integrity_check;` on any copy. Do not run manual schema changes on the live database.
+
 ## 🗄️ Storage, backup, and disaster recovery
 
-The active library lives at:
+By default, the active library lives at:
 
 ```text
 backend/data/movie-tracker.sqlite
 ```
 
-This file is excluded from Git because Git tracks application code—not changing live data.
+With `MOVIE_TRACKER_DATA_DIR`, the active file is `<MOVIE_TRACKER_DATA_DIR>/movie-tracker.sqlite` (normally `/var/lib/cinevault/movie-tracker.sqlite` on EC2). It is excluded from Git because Git tracks application code—not changing live data.
 
 ### Fresh installation behavior
 
@@ -301,6 +345,20 @@ npm run restore -- "path/to/verified-backup.sqlite"
 npm run decrypt-backup -- "path/to/backup.sqlite.cvbackup" "path/to/recovered.sqlite"
 ```
 
+`decrypt-backup` reads `BACKUP_ENCRYPTION_PASSPHRASE` from the **current process environment**, not automatically from a `.env` file. On Windows PowerShell, from `backend`, enter it without putting it in shell history:
+
+```powershell
+$backupSecret = Read-Host 'Backup passphrase' -AsSecureString
+$env:BACKUP_ENCRYPTION_PASSPHRASE = [System.Net.NetworkCredential]::new('', $backupSecret).Password
+try {
+  npm run decrypt-backup -- 'C:\path\to\backup.sqlite.cvbackup' 'C:\path\to\recovered.sqlite'
+} finally {
+  Remove-Item Env:BACKUP_ENCRYPTION_PASSPHRASE -ErrorAction SilentlyContinue
+}
+```
+
+Inspect the recovered file with SQLite (`PRAGMA integrity_check;`) before considering it for a restore. Keep the passphrase in a password manager; do not paste it into logs, Git, tickets, or chat.
+
 Terminal backups are named `manual.<timestamp>.sqlite`. Backups requested from the website are named `automatic.<timestamp>.sqlite`; “automatic” identifies the source and retention class—it is not a continuously running scheduler. Migration, merge, import, permanent-delete, and restore operations create purpose-labelled recovery snapshots when required.
 
 The restore command:
@@ -316,7 +374,7 @@ Always stop the backend before restoring. Never copy only `movie-tracker.sqlite`
 > [!IMPORTANT]
 > Use Git to restore source code. Use SQLite backups or exports to restore library data.
 
-Backup retention defaults to the latest 10 manual snapshots, one automatic snapshot per day for 30 days, and one automatic snapshot per month for 12 months. The same calendar policy applies to encrypted mirror copies. Migration, pre-delete, and pre-restore snapshots are never pruned automatically. To create encrypted off-device copies, set `BACKUP_MIRROR_DIR` to an absolute folder on another drive or a private synchronized folder and set `BACKUP_ENCRYPTION_PASSPHRASE` to a long passphrase. Mirrored files use an authenticated AES-256-GCM envelope with a unique salt and nonce; the server verifies every encrypted copy immediately. The passphrase is never written to a backup or log. Keep it in a password manager because an encrypted backup cannot be recovered without it.
+Backup retention defaults to the latest 10 manual snapshots, one automatic snapshot per day for 30 days, and one automatic snapshot per month for 12 months. The same policy applies to encrypted copies **in the configured mirror directory**. Migration, pre-delete, and pre-restore snapshots are never pruned automatically. You can change `MANUAL_BACKUP_RETENTION`, `AUTOMATIC_DAILY_RETENTION_DAYS`, and `AUTOMATIC_MONTHLY_RETENTION_MONTHS`. To create encrypted off-device copies, set `BACKUP_MIRROR_DIR` to an absolute folder on another drive or a private synchronized folder and set `BACKUP_ENCRYPTION_PASSPHRASE` to a long passphrase. Mirrored files use an authenticated AES-256-GCM envelope with a unique salt and nonce; the server verifies every encrypted copy immediately. The passphrase is never written to a backup or log. Keep it in a password manager because an encrypted backup cannot be recovered without it.
 
 Example environment configuration:
 
@@ -332,18 +390,18 @@ Google Drive for desktop can be used without granting CineVault Google-account c
 
 On a headless EC2 server, use the maintained `rclone` systemd service and timer under `deploy/systemd`. CineVault still performs the database backup, encryption, and immediate verification; rclone receives only `.cvbackup` ciphertext from the local outbox. Never mount Google Drive as `MOVIE_TRACKER_DATA_DIR` and never place the live SQLite database in a synchronized directory.
 
-The restore command checks `backend/data/server.lock` and refuses to replace the database while the API process is active.
+The restore command checks `<data directory>/server.lock` and refuses to replace the database while the API process is active.
 
 ### Recovery procedure
 
 1. Stop the API cleanly with `Ctrl+C` or `sudo systemctl stop cinevault`.
-2. Preserve the entire current `backend/data` directory before attempting repair.
+2. Preserve the entire current runtime data directory (`backend/data` locally or `MOVIE_TRACKER_DATA_DIR` on EC2), including SQLite WAL/SHM files, before attempting repair.
 3. Choose the newest backup that passes `PRAGMA integrity_check`.
 4. Run `npm run restore -- "path/to/backup.sqlite"` inside `backend`.
 5. Run `npm run backup` immediately to create a new verified checkpoint.
 6. Start the API and verify counts, recent entries, Trash, watch histories, seasons, and episodes.
 
-The current live database is always `backend/data/movie-tracker.sqlite`. Files beginning with `manual`, `automatic`, `pre-`, or containing `before-restore` are recovery artifacts, not the active database. Git can recover source code but cannot recover uncommitted SQLite data.
+The current live database is always `<data directory>/movie-tracker.sqlite`. Files beginning with `manual`, `automatic`, `pre-`, or containing `before-restore` are recovery artifacts, not the active database. Git can recover source code but cannot recover uncommitted SQLite data.
 
 ### Portable JSON export and import
 
@@ -401,7 +459,14 @@ The Activity page is the user-readable view of `audit_log`. It supports text sea
 
 ### 1. Configure the backend
 
-Create `backend/.env`:
+In Windows PowerShell, start in the repository root. Copy the committed template, then edit `backend/.env` with your own values; do not commit this file:
+
+```powershell
+Copy-Item backend/.env.example backend/.env
+notepad backend/.env
+```
+
+At minimum, set:
 
 ```dotenv
 WEBSITE=http://localhost:3000
@@ -409,12 +474,11 @@ PORT=3001
 APP_PASSWORD=replace-with-a-long-local-password
 GMAIL_SMTP_USER=your-cinevault-mailbox@gmail.com
 GMAIL_APP_PASSWORD=your-google-app-password
-MOVIE_TRACKER_TIME_ZONE=Asia/Kolkata
 ```
 
 ### 2. Configure the frontend
 
-Create `frontend/.env`:
+Create `frontend/.env` with the following non-secret development settings:
 
 ```dotenv
 VITE_API_URL=http://localhost:3001
@@ -424,7 +488,7 @@ VITE_SERVER_PORT=3000
 
 ### 3. Install and run
 
-Backend terminal:
+Use **two separate terminals** opened at the repository root. Backend terminal:
 
 ```bash
 cd backend
@@ -450,11 +514,11 @@ The safe default schedules a member account for deletion after a 14-day recovery
 
 The owner-only **Accounts & security** screen shows members, roles, status, last sign-in, scheduled deletion, pending invitations, provider delivery state, expiration and recent security events. It supports invitation revocation, member disable/activation, scheduled-deletion recovery and ownership transfer. Ownership transfer requires a 10-minute code sent to the current owner's mailbox, updates both roles atomically and notifies both accounts.
 
-Account-removal archives carry the portable export schema version plus a SHA-256 integrity checksum calculated over the archive before the integrity field is added. Password hashes, salts, sessions, invitation tokens and recovery tokens are never exported. After permanent deletion, retained audit events replace the former email identity with a stable `deleted-user:…` pseudonym and redact that email from diagnostic details.
+Account-removal archives carry the portable export schema version plus a SHA-256 integrity checksum calculated over the archive before the integrity field is added. Password hashes, salts, sessions, invitation tokens and recovery tokens are never exported. Permanent deletion removes the account row and its currently owned titles from the **live relational tables**. It pseudonymizes the audit actor and redacts that email in audit details/metadata. It does **not** guarantee complete erasure: audit before/after snapshots, logs, SQLite free pages/WAL, downloaded JSON archives, local/encrypted backups, Google Drive copies, and EBS snapshots may retain historical information. Self-service immediate deletion does not first create a new recovery backup, although older backups remain; owner-triggered permanent member removal and automatic expiry purges do create a backup. Restoring an older backup can reintroduce deleted accounts and titles. Review every retained copy before making an erasure or privacy-compliance claim.
 
 For Gmail delivery, enable two-step verification for the mailbox, create a Google app password, and store it only as `GMAIL_APP_PASSWORD`. In development, when Gmail SMTP is not configured, the backend writes the invitation or reset URL to the application log for local testing; production refuses to pretend that an email was sent.
 
-On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. Backup and export folders appear later only when their corresponding features are used. Portable complete and clean JSON files are reviewed and imported through Data Health; startup never imports files implicitly.
+On a clean first startup, only `backend/data/movie-tracker.sqlite` is created under the data directory. Backup and export folders appear later only when their corresponding features are used. Portable complete and clean JSON files are reviewed and imported through Data Health; startup never imports files implicitly. To restore an existing library, use the reviewed Data Health import or the verified SQLite restore command, not a blind copy over a running database.
 
 ## ⚙️ Configuration reference
 
@@ -472,7 +536,6 @@ On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. B
 | `TRUST_PROXY` | `0` | Set to `1` behind one trusted reverse proxy |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Per-client in-memory request allowance |
 | `MOVIE_TRACKER_DATA_DIR` | `backend/data` | Absolute or resolved runtime database/backup/export directory |
-| `MOVIE_TRACKER_TIME_ZONE` | `Asia/Kolkata` | Calendar zone used for generated watch timestamps |
 | `ASSET_SCAN_COOLDOWN_HOURS` | `24` | Minimum age before an unchanged media URL is checked again |
 | `LOG_LEVEL` | `info` | Winston operational-log threshold |
 | `BACKUP_MIRROR_DIR` | empty | Absolute off-device or synchronized mirror directory |
@@ -482,6 +545,8 @@ On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. B
 | `AUTOMATIC_MONTHLY_RETENTION_MONTHS` | `12` | Older monthly automatic snapshots retained |
 
 Authentication sessions are persisted in SQLite and expire after 12 hours of inactivity. Ordinary backend restarts preserve valid sessions. The cookie is HTTP-only, SameSite=Strict, scoped to `/api`, and Secure in production. State-changing authenticated requests also require the session CSRF token.
+
+**Timezones:** the browser detects its device's IANA timezone and sends it with API requests. The backend uses that timezone for watch-versus-release calendar validation and month/weekday statistics; the editor's date limits and timestamp entry also use the browser clock. Stored watch, audit, and creation timestamps remain UTC ISO instants, while release and air dates remain timezone-independent `YYYY-MM-DD` calendar dates. On another device or after changing the device timezone, an instant near midnight may display on a different local day; no database timestamps are rewritten. Non-browser API/CLI requests without a timezone use UTC. `MOVIE_TRACKER_TIME_ZONE` is no longer used and may be removed from existing `.env` or `/etc/cinevault.env` files. Existing schema-48 databases need no data migration for this change.
 
 ### Frontend environment
 
@@ -534,7 +599,7 @@ npm run lint
 npm run build
 ```
 
-At the time of this documentation, the maintained suite contains 33 backend tests and 18 frontend tests. Treat the command exit status—not the documented count—as authoritative when new tests are added.
+The suite grows with the application; use each command's exit status and reported test count rather than a fixed count in this document. In a restricted shell, the frontend's Vite/esbuild runner may fail to read its configuration; rerun it in a normal terminal with access to the project before treating the release gate as passed.
 
 ## 🔌 API reference
 
@@ -599,7 +664,7 @@ Browser → HTTPS → Nginx on EC2
 ### 1. Prepare the repository and data
 
 1. Add both `.env` files and all runtime-data patterns to `.gitignore`.
-2. Remove already tracked `.env` files with `git rm --cached`, provide secret-free `.env.example` files, and rotate exposed values.
+2. Remove already tracked `.env` files with `git rm --cached`, use the committed `backend/.env.example` and the frontend settings documented below as secret-free examples, and rotate exposed values.
 3. Run the full release gate and create a verified manual backup.
 4. Push code to a private GitHub repository; upload the verified SQLite backup separately over SSH/SCP.
 
@@ -619,21 +684,28 @@ Adding a file to `.gitignore` does not untrack a file already committed. Use `gi
 
 ### 2. Create the instance
 
-Use an Ubuntu LTS EC2 instance in a suitable region with an encrypted EBS volume and IMDSv2. Associate an Elastic IP. Permit inbound `443` and temporary `80` publicly, restrict `22` to your own IP, and do **not** expose `3000` or `3001`. Create `/opt/cinevault` for code and `/var/lib/cinevault` for persistent data; keep the latter owned by the service account with restrictive permissions.
+In the AWS console, select a Region, launch an Ubuntu LTS EC2 instance and select an instance type and encrypted EBS size that fit your expected storage and budget. Create/download a key pair and store its private key outside the repository. Select a public subnet and a security group with inbound SSH `22` **only from your own IP**, HTTP `80` and HTTPS `443` from the internet; do **not** expose `3000` or `3001`. Require IMDSv2 in advanced instance settings. Allocate and associate an Elastic IP, then point your DNS `A` record to it. Confirm outbound access for package installation, SMTP, and optional cloud backup. AWS console labels and pricing may change; consult the [EC2 launch guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-launch-parameters.html), [key-pair guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html), and [EBS snapshot guide](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-snapshots.html). From PowerShell, test `ssh -i "C:\path\to\your-key.pem" ubuntu@YOUR_ELASTIC_IP` before proceeding.
 
 ### 3. Install code and data
 
 ```bash
 sudo apt update
-sudo apt install -y git nginx
+sudo apt install -y curl git nginx sqlite3
+curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource_setup.sh
+sudo -E bash /tmp/nodesource_setup.sh
+sudo apt install -y nodejs
+node --version
+npm --version
+node -e "require('node:sqlite'); console.log('node:sqlite available')"
 sudo mkdir -p /opt/cinevault /var/lib/cinevault
 sudo chown -R "$USER":"$USER" /opt/cinevault /var/lib/cinevault
+sudo chmod 700 /var/lib/cinevault
 git clone YOUR_PRIVATE_REPOSITORY_URL /opt/cinevault
 cd /opt/cinevault/backend && npm ci
 cd /opt/cinevault/frontend && npm ci
 ```
 
-Install a maintained Node release with `node:sqlite`. Transfer the newest verified backup to `/var/lib/cinevault/movie-tracker.sqlite`, then set mode `600`.
+If `node:sqlite` is unavailable, install a newer maintained Node release before using the database. On an existing library deployment, transfer the newest verified backup to `/var/lib/cinevault/movie-tracker.sqlite` **before starting the service**, then set mode `600`. On a brand-new library, do not transfer a database; first startup creates schema 48.
 
 Example transfer from Windows PowerShell:
 
@@ -643,13 +715,16 @@ scp -i "your-key.pem" `
   ubuntu@YOUR_ELASTIC_IP:/var/lib/cinevault/movie-tracker.sqlite
 ```
 
-Then verify ownership and mode on EC2:
+Then verify ownership, version, integrity, and mode on EC2 **before invoking this release's backend code**:
 
 ```bash
+sqlite3 /var/lib/cinevault/movie-tracker.sqlite 'SELECT MAX(version) FROM schema_migrations; PRAGMA integrity_check;'
 chmod 600 /var/lib/cinevault/movie-tracker.sqlite
 cd /opt/cinevault/backend
 MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault npm run backup
 ```
+
+Run these commands only after copying an existing database, and proceed with `npm run backup` only when integrity is `ok` and the version is 46, 47, or 48. This release upgrades 46/47 to 48; older files require the matching earlier release and a verified upgrade **on a copy** first. Never transfer a live SQLite file alone while its WAL is active. For a new empty installation, skip the transfer and these checks; the first service start creates schema 48.
 
 ### 4. Configure production
 
@@ -664,11 +739,10 @@ MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault
 APP_PASSWORD=replace-with-a-long-random-unique-password
 GMAIL_SMTP_USER=your-cinevault-mailbox@gmail.com
 GMAIL_APP_PASSWORD=replace-with-a-google-app-password
-MOVIE_TRACKER_TIME_ZONE=Asia/Kolkata
 RATE_LIMIT_PER_MINUTE=300
 ```
 
-Protect it with `sudo chmod 600 /etc/cinevault.env`. Build the frontend with `VITE_API_URL=https://movies.sujithalder.in`. Configure a systemd service with `WorkingDirectory=/opt/cinevault/backend`, `EnvironmentFile=/etc/cinevault.env`, and `ExecStart=<absolute-node-path> index.js`; enable automatic restart on failure.
+Create `/etc/cinevault.env` with `sudo nano /etc/cinevault.env`, then run `sudo chown root:root /etc/cinevault.env` and `sudo chmod 600 /etc/cinevault.env`. Build the frontend with `VITE_API_URL=https://movies.sujithalder.in`. The supplied systemd service uses `WorkingDirectory=/opt/cinevault/backend`, `EnvironmentFile=/etc/cinevault.env`, and `/usr/bin/node`; verify the paths before enabling it. Keep passwords and the encryption passphrase in a password manager, not in Git or shell history.
 
 Build the frontend:
 
@@ -872,6 +946,8 @@ tail -n 100 /var/lib/cinevault/off-device-outbox/rclone-upload.log
 
 The timer uses `rclone copy`, not `sync`: it uploads missing or changed encrypted files but never deletes older Drive backups. Local outbox retention still follows CineVault's manual-backup policy; Google Drive retention should be reviewed separately according to available account storage.
 
+**Retention boundaries:** CineVault's three retention settings affect only `manual.*` and `automatic.*` files in its local backup and encrypted-mirror directories. The timer does **not** remove old files already in Google Drive. `pre-*` and other purpose-labelled recovery files, EBS/AWS snapshots, browser downloads, and copied JSON exports also require separate review and deletion policies. Do not assume that deleting an entry or account has removed it from any of these historical copies. Before pruning a remote copy, verify a newer encrypted backup can be downloaded, decrypted with the retained passphrase, and passes `PRAGMA integrity_check`; review retention obligations first.
+
 Test recovery without touching the live database:
 
 ```bash
@@ -944,7 +1020,6 @@ MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault
 APP_PASSWORD=replace-with-a-long-random-unique-password
 GMAIL_SMTP_USER=your-cinevault-mailbox@gmail.com
 GMAIL_APP_PASSWORD=replace-with-a-google-app-password
-MOVIE_TRACKER_TIME_ZONE=Asia/Kolkata
 RATE_LIMIT_PER_MINUTE=300
 MANUAL_BACKUP_RETENTION=10
 AUTOMATIC_DAILY_RETENTION_DAYS=30
@@ -1114,11 +1189,30 @@ Check `sudo systemctl status cinevault`, `sudo journalctl -u cinevault`, the bro
 
 ## 🩺 Troubleshooting
 
+### Startup rejects a database or reports a movie/series type conflict
+
+Stop the service before investigating. Do not delete seasons, episode watches, or title-level watch history merely to make a migration pass; those records may be the only copy of someone's viewing data. First preserve the current SQLite database with its WAL/SHM files and any existing backup, then inspect a **separate copy**. Confirm the path used by the service with `sudo systemctl cat cinevault` and the `MOVIE_TRACKER_DATA_DIR` setting; `backend/data/movie-tracker.sqlite` may be an unused local file on EC2. Read-only checks on the stopped EC2 database:
+
+```bash
+sudo systemctl stop cinevault
+sqlite3 /var/lib/cinevault/movie-tracker.sqlite \
+  'SELECT MAX(version) FROM schema_migrations; PRAGMA integrity_check; PRAGMA foreign_key_check;'
+sqlite3 -header -column /var/lib/cinevault/movie-tracker.sqlite \
+  "SELECT c.id,c.title,c.type,
+      (SELECT COUNT(*) FROM seasons s WHERE s.series_id=c.id) AS seasons,
+      (SELECT COUNT(*) FROM watch_history w WHERE w.content_id=c.id) AS title_watches
+    FROM content_items c
+    WHERE (c.type='movie' AND EXISTS (SELECT 1 FROM seasons s WHERE s.series_id=c.id))
+       OR (c.type='series' AND EXISTS (SELECT 1 FROM watch_history w WHERE w.content_id=c.id));"
+```
+
+An intact database should return `ok` for integrity, no foreign-key rows, and no rows in the second query. If there is a mismatch, review the title and child data against a verified backup or complete JSON export, decide whether the title type or the child records are authoritative, and migrate that **specific** entry using a tested procedure. Never apply a blanket `DELETE` to every conflicting row. After repair, rerun the checks, create a verified backup, then start the service and inspect `sudo journalctl -u cinevault -n 100 --no-pager`. A schema older than 46 must be upgraded with the matching older CineVault release on a copy first; a 46/47 database upgrades to 48 on startup after its pre-migration backup.
+
 | Symptom | Check |
 |---|---|
 | `database disk image is malformed` | Stop the backend; preserve the DB/WAL/SHM set; verify backups read-only; restore the newest integral backup. Never attach WAL/SHM files from another database image. |
 | Backup popup says it failed | Inspect `backend/logs/error.jsonl`, Activity failures, disk space, directory permissions, and `PRAGMA integrity_check`. |
-| Restore refuses to run | A live `backend/data/server.lock` process is protecting the database. Stop the backend cleanly. Remove a stale lock only after verifying its PID is not running. |
+| Restore refuses to run | A live `<data directory>/server.lock` process is protecting the database. Stop the backend cleanly. Remove a stale lock only after verifying its PID is not running. |
 | Browser receives 401 | Sign in again and confirm the account is active; persisted sessions survive ordinary backend restarts but expire after 12 hours of inactivity. |
 | Invitation/recovery email is absent | Confirm `GMAIL_SMTP_USER` and a Google app password in `GMAIL_APP_PASSWORD`; inspect Activity and application logs without exposing the secret. |
 | Browser receives 403 on edits | Refresh authentication status so the frontend has the current CSRF token; confirm cookies are accepted. |
