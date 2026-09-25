@@ -43,12 +43,6 @@ function sendError(req, res, error, operation, audit = {}) {
         ...(error.code ? { code:error.code } : {}),...(error.details ? error.details : {}) });
 }
 
-// Returns the compatibility movie collection used by older clients.
-exports.getMovies = (req, res) => {
-    try { res.json({ message:'Library loaded', movies:Model.getMovies() }); }
-    catch (error) { sendError(req,res,error,'content.compatibility_read'); }
-};
-
 // Returns a paginated collection for the current application.
 exports.getContent = (req, res) => {
     try { res.json(Model.getContent(req.query)); }
@@ -78,16 +72,16 @@ exports.addMovie = (req, res) => {
 
 // Updates a movie or series from the request payload.
 exports.editMovie = (req, res) => {
-    try { res.json({ message:`${req.body.title} was updated`,item:Model.updateContent(req.body,auditContext(req)) }); }
+    try { res.json({ message:`${req.body.title} was updated`,item:Model.updateContent({ ...req.body,id:req.params.id },auditContext(req)) }); }
     catch (error) { sendError(req,res,error,'content.update',{ action:'update',entityType:'content',entityId:req.body.id || req.params.id }); }
 };
 
 // Moves a movie or series to recoverable trash.
 exports.deleteMovie = (req, res) => {
     try {
-        const item = Model.deleteContent(req.body?.movieId || req.params.id,auditContext(req));
+        const item = Model.deleteContent(req.params.id,auditContext(req));
         res.json({ message:`${item.title} was moved to trash`, item });
-    } catch (error) { sendError(req,res,error,'content.trash',{ action:'trash',entityType:'content',entityId:req.body?.movieId || req.params.id }); }
+    } catch (error) { sendError(req,res,error,'content.trash',{ action:'trash',entityType:'content',entityId:req.params.id }); }
 };
 
 // Restores one trashed item to the active library.
@@ -112,9 +106,9 @@ exports.permanentlyDeleteContent = (req, res) => {
 // Toggles the favorite state of a movie or series.
 exports.toggleFavorite = (req, res) => {
     try {
-        const item = Model.toggleFavorite(req.body?.movieId || req.params.id,auditContext(req));
+        const item = Model.toggleFavorite(req.params.id,auditContext(req));
         res.json({ message:`${item.title} favorite status was updated`, item });
-    } catch (error) { sendError(req,res,error,'content.favorite',{ action:'favorite',entityType:'content',entityId:req.body?.movieId || req.params.id }); }
+    } catch (error) { sendError(req,res,error,'content.favorite',{ action:'favorite',entityType:'content',entityId:req.params.id }); }
 };
 
 // Returns selection catalogs for countries, ratings, genres, and watch sources.

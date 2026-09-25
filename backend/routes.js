@@ -4,12 +4,6 @@ const security = require('./security');
 
 const router = express.Router();
 
-router.get('/movie', controller.getMovies);
-router.post('/movie', controller.addMovie);
-router.put('/movie', controller.editMovie);
-router.delete('/movie', controller.deleteMovie);
-router.patch('/movie', controller.toggleFavorite);
-
 router.get('/v1/content', controller.getContent);
 router.get('/v1/anniversaries',controller.getReleaseAnniversaries);
 router.get('/v1/content/:id', controller.getContentById);

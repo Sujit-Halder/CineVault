@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { database, EXPORT_DIR, createBackup: createDatabaseBackup } = require('./database');
-const EXPORT_SCHEMA_VERSION=6;
+const EXPORT_SCHEMA_VERSION=7;
 const { normalizeCountryCodes,normalizeLanguageTags, normalizeContentRatings, normalizeWatchSources, normalizeSubtype,normalizePresentationForms,getCatalogs,EPISODE_TYPES } = require('./catalogs');
 const { normalizeSingleLineText, normalizeCommaSeparatedText, normalizeMultilineText } = require('./text-normalization');
 const { fullCompanyName,companyKey } = require('./company-normalization');
@@ -23,6 +23,15 @@ const PRODUCTION_STATUSES=['Rumored','Announced','In Development','Pre-Productio
 const MOVIE_RELEASE_STATUSES=['Unscheduled','Upcoming','Released','Canceled','Withheld'];
 const SERIES_RELEASE_STATUSES=['Unknown','Unscheduled','Upcoming','Airing','Between Seasons','Hiatus','Returning','Ended','Canceled'];
 const SEASON_RELEASE_STATUSES=['Unscheduled','Upcoming','Airing','Released','Canceled'];
+
+// Returns whether a season production stage and public-release state can coexist.
+function validSeasonLifecycle(productionStatus,releaseStatus,releaseDate,today) {
+    if (releaseStatus === 'Unscheduled') return true;
+    if (releaseStatus === 'Upcoming') return ['Announced','In Development','Pre-Production','Filming / Production','Post-Production','Completed'].includes(productionStatus);
+    if (['Airing','Released'].includes(releaseStatus)) return productionStatus === 'Completed' && Boolean(releaseDate) && releaseDate <= today;
+    if (releaseStatus === 'Canceled') return ['Canceled','Shelved','Completed'].includes(productionStatus);
+    return false;
+}
 
 // Calculates viewing progress exclusively from movie or episode viewing records.
 function viewingStatus(type,watchHistory=[],seasons=[]) {
@@ -70,7 +79,7 @@ function mapContentRow(row,related = {}) {
     return {
         id: row.id, type: row.type, subtype: row.subtype, title: row.title, originalTitle: row.original_title,
         productionStatus:row.production_status || 'Announced',releaseStatus:row.release_status || 'Unscheduled', releaseDate: row.release_date || '', watchDate: row.latest_watch_date || '',
-        seriesStartDate:row.series_start_date || '',seriesEndDate:row.series_end_date || '',seriesContinuing:Boolean(row.series_continuing),
+        seriesStartDate:row.type === 'series' ? (row.release_date || '') : '',seriesEndDate:row.series_end_date || '',seriesContinuing:Boolean(row.series_continuing),
         seriesNetwork:relational.seriesNetwork,
         duration: row.runtime_minutes == null ? '' : String(row.runtime_minutes), director:relational.director, casts:relational.casts,
         rating: row.personal_rating, productionCompany: row.production_company,
@@ -84,6 +93,14 @@ function mapContentRow(row,related = {}) {
         viewingStatus:viewingStatus(row.type,related.watchHistory || getWatchHistory(row.id),related.seasons || (row.type === 'series' ? getSeriesStructure(row.id) : [])),
         ...(related.seasons ? { seasons:related.seasons } : {}),
     };
+}
+
+// Selects common title columns together with the one applicable subtype-detail row.
+function contentProjection(alias='content_items') {
+    return `${alias}.*,
+        (SELECT runtime_minutes FROM movie_details WHERE content_id=${alias}.id) runtime_minutes,
+        (SELECT end_date FROM series_details WHERE content_id=${alias}.id) series_end_date,
+        COALESCE((SELECT continuing FROM series_details WHERE content_id=${alias}.id),0) series_continuing`;
 }
 
 // Hydrates a page of content with two batched child queries instead of querying per card.
@@ -185,7 +202,7 @@ function normalizePayload(payload, existing = {}) {
         : existing.productionStatus || 'Announced';
     const releaseStatuses=type === 'series' ? SERIES_RELEASE_STATUSES : MOVIE_RELEASE_STATUSES;
     const releaseStatus=releaseStatuses.includes(cleanText(payload.releaseStatus)) ? cleanText(payload.releaseStatus)
-        : existing.releaseStatus || 'Unscheduled';
+        : existing.type === type && releaseStatuses.includes(existing.releaseStatus) ? existing.releaseStatus : 'Unscheduled';
     const released=type === 'movie' ? releaseStatus === 'Released' : ['Airing','Between Seasons','Hiatus','Returning','Ended'].includes(releaseStatus);
     const trailerAvailable=!['Unscheduled','Unknown'].includes(releaseStatus);
     const releaseDate=type === 'series' ? (cleanText(payload.seriesStartDate) || cleanText(payload.releaseDate) || null) : (cleanText(payload.releaseDate) || null);
@@ -208,7 +225,7 @@ function normalizePayload(payload, existing = {}) {
     if (type === 'series' && releaseStatus === 'Ended' && !seriesEndDate) {
         throw Object.assign(new Error('End date is required when a series is not ongoing'),{ status:400 });
     }
-    const submittedRuntime = runtimeAvailable ? payload.duration : (existing.duration ?? '');
+    const submittedRuntime = type === 'movie' ? (runtimeAvailable ? payload.duration : (existing.type === 'movie' ? existing.duration ?? '' : '')) : '';
     const numericRuntime = submittedRuntime === '' || submittedRuntime == null ? null : Number(submittedRuntime);
     if (numericRuntime != null && (!Number.isInteger(numericRuntime) || numericRuntime < 1 || numericRuntime > 100000)) {
         throw Object.assign(new Error('Runtime must be a positive whole number of minutes'),{ status:400 });
@@ -219,9 +236,9 @@ function normalizePayload(payload, existing = {}) {
         try { const url=new URL(normalizedValue); if (!['http:','https:'].includes(url.protocol)) throw new Error(); }
         catch { throw Object.assign(new Error(`${label} must be a valid HTTP or HTTPS URL`),{ status:400 }); }
     }
-    const submittedSources = Array.isArray(payload.watchSources) ? payload.watchSources : (existing.watchSources || []);
+    const submittedSources = Array.isArray(payload.watchSources) ? payload.watchSources : (existing.type === type ? existing.watchSources || [] : []);
     const watchSources = normalizeWatchSources(submittedSources);
-    const watchHistory = (type === 'movie' && Array.isArray(payload.watchHistory) ? payload.watchHistory : (existing.watchHistory || [])).map((entry) => ({
+    const watchHistory = (type === 'movie' ? (Array.isArray(payload.watchHistory) ? payload.watchHistory : (existing.type === 'movie' ? existing.watchHistory || [] : [])) : []).map((entry) => ({
         id:entry.id || crypto.randomUUID(),watchedAt:String(entry.watchedAt || '').trim(),languageTag:normalizeLanguageTags([entry.languageTag])[0] || '',
     })).filter((entry) => entry.watchedAt && !Number.isNaN(Date.parse(entry.watchedAt)));
     if (watchHistory.some((entry) => !entry.languageTag)) {
@@ -236,14 +253,20 @@ function normalizePayload(payload, existing = {}) {
     if (watchHistory.some((entry) => localCalendarDate(entry.watchedAt) < releaseDate)) {
         throw Object.assign(new Error('Watch dates cannot be earlier than the release date'),{ status:400 });
     }
-    const existingSeasons=Array.isArray(existing.seasons) ? existing.seasons : [];
-    const seasons = (Array.isArray(payload.seasons) ? payload.seasons : []).map((season) => {
+    const existingSeasons=existing.type === 'series' && Array.isArray(existing.seasons) ? existing.seasons : [];
+    const seasons = (type === 'series' && Array.isArray(payload.seasons) ? payload.seasons : []).map((season) => {
         const existingSeason=existingSeasons.find((item) => item.id === season.id)
             || existingSeasons.find((item) => Number(item.seasonNumber) === Number(season.seasonNumber));
-        return { ...season,episodes:(season.episodes || []).map((episode) => {
+        const submittedEpisodes=Array.isArray(season.episodes) ? season.episodes : [];
+        const inferredPremiere=cleanText(season.releaseDate) || submittedEpisodes.map((episode) => cleanText(episode.airDate)).filter(Boolean).sort()[0] || releaseDate || '';
+        const productionStatus=PRODUCTION_STATUSES.includes(cleanText(season.productionStatus)) ? cleanText(season.productionStatus)
+            : submittedEpisodes.length && !Object.hasOwn(season,'productionStatus') ? 'Completed' : existingSeason?.productionStatus || 'Announced';
+        const seasonReleaseStatus=SEASON_RELEASE_STATUSES.includes(cleanText(season.releaseStatus)) ? cleanText(season.releaseStatus)
+            : submittedEpisodes.length && !Object.hasOwn(season,'releaseStatus') ? 'Released' : existingSeason?.releaseStatus || 'Unscheduled';
+        return { ...season,productionStatus,releaseStatus:seasonReleaseStatus,releaseDate:inferredPremiere,episodes:submittedEpisodes.map((episode) => {
             const existingEpisode=existingSeason?.episodes?.find((item) => item.id === episode.id)
                 || existingSeason?.episodes?.find((item) => Number(item.episodeNumber) === Number(episode.episodeNumber));
-            return { ...episode,airDate:episode.airDate || season.releaseDate || '',duration:runtimeAvailable ? episode.duration : (existingEpisode?.duration ?? ''),
+            return { ...episode,airDate:episode.airDate || inferredPremiere,duration:runtimeAvailable ? episode.duration : (existingEpisode?.duration ?? ''),
                 watchHistory:Array.isArray(episode.watchHistory)
                     ? episode.watchHistory : (existingEpisode?.watchHistory || []) };
         }) };
@@ -251,6 +274,15 @@ function normalizePayload(payload, existing = {}) {
     seasons.forEach((season) => {
         if (season.releaseDate && !isCalendarDate(season.releaseDate)) throw Object.assign(new Error('Season premiere dates must be real calendar dates'),{ status:400 });
         if (season.releaseDate && season.releaseDate > today) throw Object.assign(new Error('Season premiere dates cannot be in the future'),{ status:400 });
+        if (!releaseDate && (season.episodes || []).some((episode) => episode.watchHistory?.length)) {
+            throw Object.assign(new Error('Release date is required after a viewing is recorded'),{ status:400 });
+        }
+        if (!validSeasonLifecycle(season.productionStatus,season.releaseStatus,season.releaseDate,today)) {
+            throw Object.assign(new Error(`Season ${season.seasonNumber || ''} production and release statuses are inconsistent`),{ status:400 });
+        }
+        if ((season.episodes || []).length && !(season.productionStatus === 'Completed' && ['Airing','Released'].includes(season.releaseStatus) && season.releaseDate)) {
+            throw Object.assign(new Error(`Season ${season.seasonNumber || ''} must be completed in production and airing or released before episodes can be added`),{ status:400 });
+        }
         const episodeNumbers=(season.episodes || []).map((episode) => Number(episode.episodeNumber));
         if (new Set(episodeNumbers).size !== episodeNumbers.length) throw Object.assign(new Error('Episode numbers must be unique within a season'),{ status:400 });
         (season.episodes || []).forEach((episode) => {
@@ -307,25 +339,35 @@ function normalizePayload(payload, existing = {}) {
         seriesContinuing:type === 'series' && ['Airing','Between Seasons','Hiatus','Returning'].includes(releaseStatus),
         seriesNetwork:type === 'series' ? cleanCommaList(payload.seriesNetwork) : '',
         duration:numericRuntime,
-        director:type === 'movie' ? cleanCommaList(payload.director) : '',seriesCredits:type === 'series' ? (Array.isArray(payload.seriesCredits) ? payload.seriesCredits : existing.seriesCredits || []).map((credit) => ({
+        director:type === 'movie' ? cleanCommaList(payload.director) : '',seriesCredits:type === 'series' ? (Array.isArray(payload.seriesCredits) ? payload.seriesCredits : existing.type === 'series' ? existing.seriesCredits || [] : []).map((credit) => ({
             id:credit.id || crypto.randomUUID(),name:normalizeSingleLineText(credit.name),role:normalizeSingleLineText(credit.role),
-        })).filter((credit) => credit.name && credit.role) : [], casts, rating:watched ? cleanText(payload.rating) : cleanText(existing.rating),
+        })).filter((credit) => credit.name && credit.role) : [], casts, rating:watched ? cleanText(payload.rating) : cleanText(existing.type === type ? existing.rating : ''),
         productionCompanies,productionCompanyAliases:normalizedCompanies.aliases,productionCompany:productionCompanies.join(', '), posterUrl:trailerAvailable ? cleanText(payload.posterUrl) : cleanText(existing.posterUrl),
         trailerUrl:trailerAvailable ? cleanText(payload.trailerUrl) : cleanText(existing.trailerUrl), summary:normalizeMultilineText(payload.summary), favorite:Boolean(payload.favorite),
         genres,presentationForms,language:normalizeLanguageTags(payload.language),
-        awards:watched ? cleanList(payload.awards) : cleanList(existing.awards), tags:watched ? cleanList(payload.tags) : cleanList(existing.tags),
+        awards:watched ? cleanList(payload.awards) : cleanList(existing.type === type ? existing.awards : []), tags:watched ? cleanList(payload.tags) : cleanList(existing.type === type ? existing.tags : []),
         countryOfOrigin: normalizeCountryCodes(Array.isArray(payload.countryOfOrigin) ? payload.countryOfOrigin : []), contentRatings,
-        watchSources:watched ? watchSources : (existing.watchSources || []),watchHistory,
-        contentLinks:watched ? contentLinks : (existing.contentLinks || []),seasons,
+        watchSources:watched ? watchSources : (existing.type === type ? existing.watchSources || [] : []),watchHistory,
+        contentLinks:watched ? contentLinks : (existing.type === type ? existing.contentLinks || [] : []),seasons,
         creation: existing.creation || payload.creation || now, modification: now,
     };
 }
 
 // Returns values in the order used by content insert statements.
 function persistenceValues(item) {
-    return [item.id,item.type,item.subtype,item.title,item.originalTitle,item.productionStatus,item.releaseStatus,item.releaseDate,item.seriesStartDate,item.seriesEndDate,item.seriesContinuing ? 1 : 0,item.duration,
+    return [item.id,item.type,item.subtype,item.title,item.originalTitle,item.productionStatus,item.releaseStatus,item.releaseDate,
         item.rating,item.productionCompany,item.posterUrl,item.trailerUrl,item.summary,
         item.favorite ? 1 : 0,item.creation,item.modification];
+}
+
+// Replaces the exclusive subtype record so a title can never retain fields from its previous type.
+function replaceTypeDetails(contentId,item) {
+    database.prepare('DELETE FROM movie_details WHERE content_id=?').run(contentId);
+    database.prepare('DELETE FROM series_details WHERE content_id=?').run(contentId);
+    if (item.type === 'movie') database.prepare('INSERT INTO movie_details(content_id,runtime_minutes) VALUES(?,?)')
+        .run(contentId,item.duration === '' || item.duration == null ? null : Number(item.duration));
+    else database.prepare('INSERT INTO series_details(content_id,end_date,continuing) VALUES(?,?,?)')
+        .run(contentId,item.seriesEndDate || null,item.seriesContinuing ? 1 : 0);
 }
 
 // Returns paginated content and the total result count.
@@ -397,7 +439,10 @@ function getContent(query = {}) {
         }
     }
     const where = clauses.join(' AND ');
-    const allowedSort = { creation:'created_at', releaseDate:'release_date', duration:'runtime_minutes',
+    const calculatedDuration=`COALESCE(CASE WHEN type='series' THEN (
+        SELECT SUM(e.runtime_minutes) FROM seasons s JOIN episodes e ON e.season_id=s.id WHERE s.series_id=content_items.id
+    ) ELSE (SELECT runtime_minutes FROM movie_details WHERE content_id=content_items.id) END,0)`;
+    const allowedSort = { creation:'created_at', releaseDate:'release_date', duration:calculatedDuration,
         watchDate:`MAX(
             COALESCE((SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id),''),
             COALESCE((SELECT MAX(ewh.watched_at) FROM seasons s JOIN episodes e ON e.season_id=s.id
@@ -413,9 +458,11 @@ function getContent(query = {}) {
       END ${categoryOrder},
       CASE WHEN trim(title) GLOB '[0-9]*' THEN CAST(trim(title) AS INTEGER) END ${order},
       trim(title) COLLATE NOCASE ${order}`;
-    const orderBy = query.sort === 'title' ? titleOrder : `${sort} ${order}`;
+    const orderBy = query.sort === 'title' ? titleOrder : query.sort === 'duration'
+        ? `${calculatedDuration} ${order}, trim(title) COLLATE NOCASE ASC`
+        : `${sort} ${order}`;
     const total = database.prepare(`SELECT COUNT(*) AS count FROM content_items WHERE ${where}`).get(...parameters).count;
-    const rows = database.prepare(`SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
+    const rows = database.prepare(`SELECT ${contentProjection()},(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
         .all(...parameters, limit, (page - 1) * limit);
     return { items:hydrateContentRows(rows), total, page, limit, pages: Math.ceil(total / limit) };
 }
@@ -466,16 +513,10 @@ function getProductionCompanyNames(contentId) {
         WHERE cpc.content_id=? ORDER BY pc.name COLLATE NOCASE`).all(contentId).map((row) => row.name);
 }
 
-// Returns every active content item for exports and compatibility endpoints.
-function getMovies() {
-    const ownership=ownerScope();
-    return hydrateContentRows(database.prepare(`SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE ${ownership.sql} AND deleted_at IS NULL ORDER BY updated_at DESC`).all(...ownership.parameters));
-}
-
 // Returns one content item by its stable identifier.
 function getById(id) {
     const ownership=ownerScope();
-    const item = mapContentRow(database.prepare(`SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE id = ? AND ${ownership.sql} AND deleted_at IS NULL`).get(id,...ownership.parameters));
+    const item = mapContentRow(database.prepare(`SELECT ${contentProjection()},(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE id = ? AND ${ownership.sql} AND deleted_at IS NULL`).get(id,...ownership.parameters));
     if (item?.type === 'series') item.seasons = getSeriesStructure(id);
     return item;
 }
@@ -483,7 +524,7 @@ function getById(id) {
 // Returns one content item regardless of its active or trashed state.
 function getAnyById(id) {
     const ownership=ownerScope();
-    const item=mapContentRow(database.prepare(`SELECT content_items.*,(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE id=? AND ${ownership.sql}`).get(id,...ownership.parameters));
+    const item=mapContentRow(database.prepare(`SELECT ${contentProjection()},(SELECT MAX(watched_at) FROM watch_history WHERE content_id=content_items.id) latest_watch_date FROM content_items WHERE id=? AND ${ownership.sql}`).get(id,...ownership.parameters));
     if (item?.type === 'series') item.seasons=getSeriesStructure(id);
     return item;
 }
@@ -729,9 +770,10 @@ function addContent(payload, context = {}) {
         .get(normalizeTitle(item.title),item.releaseDate || '',item.type,...ownership.parameters);
     if (duplicate) throw Object.assign(new Error('A title with this release date already exists'), { status: 409 });
     runTransaction(() => {
-        database.prepare(`INSERT INTO content_items (id,type,subtype,title,original_title,production_status,release_status,release_date,series_start_date,series_end_date,series_continuing,runtime_minutes,
+        database.prepare(`INSERT INTO content_items (id,type,subtype,title,original_title,production_status,release_status,release_date,
             personal_rating,production_company,poster_url,trailer_url,summary,favorite,created_at,updated_at,owner_user_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...persistenceValues(item),ownership.userId);
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...persistenceValues(item),ownership.userId);
+        replaceTypeDetails(item.id,item);
         if (ownership.userId) database.prepare(`INSERT INTO library_entries(id,user_id,content_id,personal_rating,favorite,created_at,updated_at,deleted_at)
             VALUES(?,?,?,?,?,?,?,NULL)`).run(crypto.randomUUID(),ownership.userId,item.id,item.rating || null,item.favorite ? 1 : 0,item.creation,item.modification);
         if (item.type === 'series') replaceSeriesStructure(item.id, item.seasons);
@@ -764,10 +806,14 @@ function updateContent(payload, context = {}) {
     if (duplicate) throw Object.assign(new Error('Another title with this release date already exists'),{ status:409 });
     const values = persistenceValues(item);
     runTransaction(() => {
-        database.prepare(`UPDATE content_items SET type=?,subtype=?,title=?,original_title=?,production_status=?,release_status=?,release_date=?,series_start_date=?,series_end_date=?,series_continuing=?,runtime_minutes=?,
+        database.prepare('DELETE FROM movie_details WHERE content_id=?').run(item.id);
+        database.prepare('DELETE FROM series_details WHERE content_id=?').run(item.id);
+        database.prepare(`UPDATE content_items SET type=?,subtype=?,title=?,original_title=?,production_status=?,release_status=?,release_date=?,
             personal_rating=?,production_company=?,poster_url=?,trailer_url=?,summary=?,favorite=?,updated_at=? WHERE id=?`)
-            .run(...values.slice(1,18),item.modification,item.id);
+            .run(...values.slice(1,14),item.modification,item.id);
+        replaceTypeDetails(item.id,item);
         if (item.type === 'series') replaceSeriesStructure(item.id, item.seasons);
+        else database.prepare('DELETE FROM seasons WHERE series_id=?').run(item.id);
         replaceWatchData(item.id,item.watchHistory,item.contentLinks);
         replaceProductionCompanies(item.id,item.productionCompanies,item.productionCompanyAliases);
         replaceRelationalMetadata(item.id,item);
@@ -925,17 +971,29 @@ function cleanExportItem(item) {
         releaseDate:season.releaseDate,posterUrl:season.posterUrl,synopsis:season.synopsis,completionStatus:season.completionStatus,
         episodes:cleanEpisodes(season.episodes),
     }));
-    return {
+    const common={
         type:item.type,subtype:item.subtype,title:item.title,originalTitle:item.originalTitle,productionStatus:item.productionStatus,
-        releaseStatus:item.releaseStatus,releaseDate:item.releaseDate,seriesStartDate:item.seriesStartDate,seriesEndDate:item.seriesEndDate,
-        seriesContinuing:item.seriesContinuing,seriesNetwork:item.seriesNetwork,duration:item.duration,director:item.director,
-        seriesCredits:(item.seriesCredits || []).map((credit) => ({ name:credit.name,role:credit.role })),casts:item.casts,
+        releaseStatus:item.releaseStatus,releaseDate:item.releaseDate,casts:item.casts,
         rating:item.rating,productionCompanies:item.productionCompanies,posterUrl:item.posterUrl,trailerUrl:item.trailerUrl,
         summary:item.summary,favorite:item.favorite,genres:item.genres,presentationForms:item.presentationForms,language:item.language,
         awards:item.awards,tags:item.tags,countryOfOrigin:item.countryOfOrigin,contentRatings:item.contentRatings,
-        watchSources:item.watchSources,watchHistory:cleanHistory(item.watchHistory),contentLinks:(item.contentLinks || []).map((link) => ({ url:link.url })),
-        seasons:cleanSeasons(item.seasons),
+        watchSources:item.watchSources,contentLinks:(item.contentLinks || []).map((link) => ({ url:link.url })),
     };
+    if (item.type === 'series') return { ...common,seriesEndDate:item.seriesEndDate,seriesContinuing:item.seriesContinuing,
+        seriesNetwork:item.seriesNetwork,seriesCredits:(item.seriesCredits || []).map((credit) => ({ name:credit.name,role:credit.role })),seasons:cleanSeasons(item.seasons) };
+    return { ...common,duration:item.duration,director:item.director,watchHistory:cleanHistory(item.watchHistory) };
+}
+
+// Removes derived and duplicated relationships from complete exports while retaining recovery identity and timestamps.
+function compactCompleteItem(item) {
+    const compact={ ...item };
+    ['watchDate','viewingStatus','watchHistory','contentLinks','seriesCredits','seasons','productionCompany'].forEach((key) => delete compact[key]);
+    if (item.type === 'series') {
+        delete compact.duration; delete compact.director; delete compact.seriesStartDate;
+    } else {
+        delete compact.seriesStartDate; delete compact.seriesEndDate; delete compact.seriesContinuing; delete compact.seriesNetwork;
+    }
+    return compact;
 }
 
 // Builds a complete or clean portable representation for a selected or filtered view.
@@ -951,26 +1009,28 @@ function buildExportPayload(options={}) {
         scope:normalizeSingleLineText(options.scope) || 'Library',isSubset:Boolean(requestedIds.length || hasNarrowingQuery),exportedAt:new Date().toISOString(),contentCount:content.length };
     if (metadata.exportType === 'clean') return { ...metadata,content:content.map(cleanExportItem) };
     const ids=content.map((item) => item.id);
-    if (!ids.length) return { ...metadata,content:[],seasons:[],episodes:[],watchHistory:[],episodeWatchHistory:[],contentLinks:[],seriesCredits:[] };
+    if (!ids.length) return { ...metadata,content:[],seasons:[],episodes:[],watchHistory:[],episodeWatchHistory:[],contentLinks:[],seriesCredits:[],episodeCredits:[] };
     const placeholders=ids.map(() => '?').join(',');
     const seasons=database.prepare(`SELECT * FROM seasons WHERE series_id IN (${placeholders}) ORDER BY series_id,season_number`).all(...ids);
     const seasonIds=seasons.map((season) => season.id); const seasonPlaceholders=seasonIds.map(() => '?').join(',');
     const episodes=seasonIds.length ? database.prepare(`SELECT * FROM episodes WHERE season_id IN (${seasonPlaceholders}) ORDER BY season_id,episode_number`).all(...seasonIds) : [];
     const episodeIds=episodes.map((episode) => episode.id); const episodePlaceholders=episodeIds.map(() => '?').join(',');
-    const recoverableContent=content.map((item) => ({ ...item,deletedAt:null }));
+    const recoverableContent=content.map((item) => compactCompleteItem({ ...item,deletedAt:null }));
     return { ...metadata,content:recoverableContent,seasons,episodes,
         watchHistory:database.prepare(`SELECT * FROM watch_history WHERE content_id IN (${placeholders}) ORDER BY watched_at`).all(...ids),
         episodeWatchHistory:episodeIds.length ? database.prepare(`SELECT * FROM episode_watch_history WHERE episode_id IN (${episodePlaceholders}) ORDER BY watched_at`).all(...episodeIds) : [],
         contentLinks:database.prepare(`SELECT * FROM content_links WHERE content_id IN (${placeholders}) ORDER BY domain,url`).all(...ids),
         seriesCredits:database.prepare(`SELECT cc.content_id series_id,p.name person_name,cc.role,cc.display_order FROM content_credits cc JOIN people p ON p.id=cc.person_id
-            WHERE cc.content_id IN (${placeholders}) AND cc.role NOT IN ('Director','Cast') ORDER BY cc.content_id,cc.display_order`).all(...ids) };
+            WHERE cc.content_id IN (${placeholders}) AND cc.role NOT IN ('Director','Cast') ORDER BY cc.content_id,cc.display_order`).all(...ids),
+        episodeCredits:episodeIds.length ? database.prepare(`SELECT ec.episode_id,p.name person_name,ec.role,ec.display_order FROM episode_credits ec JOIN people p ON p.id=ec.person_id
+            WHERE ec.episode_id IN (${episodePlaceholders}) ORDER BY ec.episode_id,ec.display_order`).all(...episodeIds) : [] };
 }
 
 // Builds aggregate library statistics without sending the full collection to the browser.
 function getStatistics() {
     const ownership=ownerScope();
     const joinedOwnership=ownerScope('c');
-    const rows = database.prepare(`SELECT content_items.*,
+    const rows = database.prepare(`SELECT ${contentProjection()},
         (SELECT COUNT(*) FROM watch_history WHERE content_id=content_items.id) watch_count
         FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql}`).all(...ownership.parameters);
     const relationalMetadata=getRelationalMetadata(rows.map((row) => row.id));
@@ -1079,7 +1139,7 @@ function getDataHealth() {
     const checks=[
         ['missingPosters','Entries without posters',"trim(poster_url)=''"],
         ['missingReleaseDates','Entries without release dates',"release_date IS NULL OR release_date=''"],
-        ['watchedWithoutRuntime','Watched movies without runtime',"type='movie' AND runtime_minutes IS NULL AND EXISTS(SELECT 1 FROM watch_history h WHERE h.content_id=content_items.id)"],
+        ['watchedWithoutRuntime','Watched movies without runtime',"type='movie' AND (SELECT runtime_minutes FROM movie_details WHERE content_id=content_items.id) IS NULL AND EXISTS(SELECT 1 FROM watch_history h WHERE h.content_id=content_items.id)"],
         ['seriesWithoutSeasons','Series without seasons',"type='series' AND NOT EXISTS(SELECT 1 FROM seasons s WHERE s.series_id=content_items.id)"],
         ['emptyProductionCompanies','Entries without production companies',"trim(production_company)=''"],
     ];
@@ -1103,7 +1163,7 @@ function getDataHealth() {
         FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql} GROUP BY type,lower(trim(title)),ifnull(release_date,'') HAVING COUNT(*)>1 ORDER BY count DESC LIMIT 100`).all(...ownership.parameters)
         .map((row) => ({ ...row,items:row.ids.split(String.fromCharCode(31)).map((id,index) => ({ id,title:row.titles.split(String.fromCharCode(31))[index] })) })) };
     results.duplicateTitles.count=results.duplicateTitles.items.length;
-    const activeRows=database.prepare(`SELECT id,title,type,release_status,release_date,series_end_date,poster_url,trailer_url FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql}`).all(...ownership.parameters);
+    const activeRows=database.prepare(`SELECT id,title,type,release_status,release_date,(SELECT end_date FROM series_details WHERE content_id=content_items.id) series_end_date,poster_url,trailer_url FROM content_items WHERE deleted_at IS NULL AND ${ownership.sql}`).all(...ownership.parameters);
     const healthMetadata=getRelationalMetadata(activeRows.map((row) => row.id));
     const urlIssues=[]; const unrated=[]; const unrecognized=[]; const lifecycleIssues=[]; const sourceIssues=[];
     const catalogs=getCatalogs();
@@ -1293,20 +1353,45 @@ function dismissProductionCompanySuggestion(key,context={}) {
 // Reconstructs nested series and history data from a portable export payload.
 function importItems(payload) {
     if (!payload || !Array.isArray(payload.content)) throw Object.assign(new Error('Select a valid CineVault JSON export'),{ status:400 });
+    if (Number(payload.schemaVersion) !== EXPORT_SCHEMA_VERSION) throw Object.assign(new Error(`This release imports only CineVault portable schema ${EXPORT_SCHEMA_VERSION}`),{ status:400 });
     if (payload.exportType === 'clean') return payload.content;
+    const requiredCollections=['seasons','episodes','watchHistory','episodeWatchHistory','contentLinks','seriesCredits','episodeCredits'];
+    if (payload.exportType !== 'complete' || requiredCollections.some((key) => !Array.isArray(payload[key]))) {
+        throw Object.assign(new Error('The complete export is missing required relational collections'),{ status:400 });
+    }
     return payload.content.map((item) => {
-        if (item.type !== 'series') return item;
+        const watchHistory=(payload.watchHistory || []).filter((history) => history.content_id === item.id)
+            .map((history) => ({ id:history.id,watchedAt:history.watched_at,languageTag:history.language_tag || '' }));
+        const contentLinks=(payload.contentLinks || []).filter((link) => link.content_id === item.id)
+            .map((link) => ({ id:link.id,url:link.url,domain:link.domain }));
+        const relationships={
+            watchHistory,
+            contentLinks,
+        };
+        if (item.type !== 'series') return { ...item,...relationships };
+        const seriesCredits=(payload.seriesCredits || []).filter((credit) => credit.series_id === item.id)
+            .map((credit) => ({ id:credit.id,name:credit.person_name,role:credit.role }));
         const seasons=(payload.seasons || []).filter((season) => season.series_id === item.id).map((season) => ({
-            id:season.id,seasonNumber:season.season_number,title:season.title,status:season.status,releaseDate:season.release_date || '',posterUrl:season.poster_url || '',
+            id:season.id,seasonNumber:season.season_number,title:season.title,productionStatus:season.production_status || 'Announced',releaseStatus:season.release_status || 'Unscheduled',releaseDate:season.release_date || '',posterUrl:season.poster_url || '',
             synopsis:season.synopsis || '',completionStatus:season.completion_status || 'Not Started',
             episodes:(payload.episodes || []).filter((episode) => episode.season_id === season.id).map((episode) => ({
                 id:episode.id,episodeNumber:episode.episode_number,title:episode.title,airDate:episode.air_date || '',duration:episode.runtime_minutes ?? '',
-                progressSeconds:episode.progress_seconds || 0,summary:episode.summary || '',episodeType:episode.episode_type || 'Regular',director:episode.director || '',watchHistory:(payload.episodeWatchHistory || [])
+                progressSeconds:episode.progress_seconds || 0,summary:episode.summary || '',episodeType:episode.episode_type || 'Regular',
+                director:payload.episodeCredits.filter((credit) => credit.episode_id === episode.id && credit.role === 'Director').map((credit) => credit.person_name).join(', '),watchHistory:payload.episodeWatchHistory
                     .filter((history) => history.episode_id === episode.id).map((history) => ({ id:history.id,watchedAt:history.watched_at,languageTag:history.language_tag || '' })),
             })),
         }));
-        return { ...item,seasons };
+        return { ...item,...relationships,seriesCredits,seasons };
     });
+}
+
+// Removes persistence identifiers when an imported title is added alongside its source database records.
+function withoutImportedIds(item) {
+    return { ...item,id:undefined,watchHistory:(item.watchHistory || []).map(({ id:ignored,...entry }) => entry),
+        contentLinks:(item.contentLinks || []).map(({ id:ignored,...entry }) => entry),seriesCredits:(item.seriesCredits || []).map(({ id:ignored,...credit }) => credit),
+        seasons:(item.seasons || []).map(({ id:ignored,...season }) => ({ ...season,episodes:(season.episodes || []).map(({ id:ignoredEpisode,...episode }) => ({
+            ...episode,watchHistory:(episode.watchHistory || []).map(({ id:ignoredWatch,...entry }) => entry),
+        })) })) };
 }
 
 // Reports import values that require correction before normal entry validation can accept them.
@@ -1390,7 +1475,8 @@ function applyImport(payload,decisions = {},context = {},options = {}) {
     accepted.forEach(({ incoming,existingRow }) => {
         if (strategy === 'replace-library' || !existingRow) {
             const importedId=strategy === 'replace-library' && payload.exportType !== 'clean' && incoming.id ? incoming.id : crypto.randomUUID();
-            addContent({ ...incoming,id:importedId,deletedAt:null,trashed:false },context);
+            const prepared=strategy === 'replace-library' ? incoming : withoutImportedIds(incoming);
+            addContent({ ...prepared,id:importedId,deletedAt:null,trashed:false },context);
             result.added += 1; return;
         }
         const decision=strategy === 'add-new' ? 'skip' : (decisions[incoming.id] || 'skip');
@@ -1486,5 +1572,5 @@ function getReleaseAnniversaries(onDate) {
         .sort((left,right) => right.years-left.years || left.title.localeCompare(right.title));
 }
 
-module.exports = { getContent,getMovies,getById,addContent,updateContent,bulkUpdateContent,deleteContent,restoreContent,permanentlyDeleteContent,toggleFavorite,
+module.exports = { getContent,getById,addContent,updateContent,bulkUpdateContent,deleteContent,restoreContent,permanentlyDeleteContent,toggleFavorite,
     getNotifications,markNotificationRead,buildExportPayload,exportJson,createBackup,recordAudit,getAudit,getReleaseAnniversaries,getStatistics,getDataHealth,mergeCanonicalValues,previewImport,applyImport,getFilterCatalogs,searchProductionCompanies,mergeProductionCompanies,dismissProductionCompanySuggestion,normalizeTitle };

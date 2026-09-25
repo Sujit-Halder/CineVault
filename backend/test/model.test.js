@@ -8,7 +8,6 @@ const { DatabaseSync } = require('node:sqlite');
 
 const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(),'movie-tracker-test-'));
 process.env.MOVIE_TRACKER_DATA_DIR = testDirectory;
-process.env.MOVIE_TRACKER_SKIP_LEGACY_IMPORT = '1';
 
 const Model = require('../model');
 const { database,createBackup } = require('../database');
@@ -32,10 +31,11 @@ function payload(overrides = {}) {
 }
 
 test('schema migrations and rating normalization use the current model',() => {
-    assert.equal(database.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,46);
+    assert.equal(database.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,48);
     assert.deepEqual(database.prepare('PRAGMA table_info(content_items)').all().filter((column) => ['watch_date','source_reference'].includes(column.name)),[]);
     assert.deepEqual(database.prepare('PRAGMA table_info(content_items)').all().filter((column) => column.name.endsWith('_json')),[]);
-    const item = Model.addContent(payload({ title:'  Normalized rating  ',originalTitle:'  Original  ',subtype:'Animated Feature',director:'  Director  ',casts:'  First   Performer(V) ,  Second Performer (v)  ,, ',productionCompany:'  Test Studio  ',summary:'  Summary text  ',genres:['Fantasy'],presentationForms:['Animation'],contentRatings:[{ territory:'IN',code:'A' },{ territory:'IND',code:'U/A' }] }));
+    assert.deepEqual(database.prepare('PRAGMA table_info(content_items)').all().filter((column) => ['runtime_minutes','series_start_date','series_end_date','series_continuing'].includes(column.name)),[]);
+    const item = Model.addContent(payload({ title:'  Normalized rating  ',originalTitle:'  Original  ',subtype:'Feature Film',director:'  Director  ',casts:'  First   Performer(V) ,  Second Performer (v)  ,, ',productionCompany:'  Test Studio  ',summary:'  Summary text  ',genres:['Fantasy'],presentationForms:['Animation'],contentRatings:[{ territory:'IN',code:'A' },{ territory:'IND',code:'U/A' }] }));
     assert.equal(item.title,'Normalized rating');
     assert.equal(item.subtype,'Feature Film');
     assert.equal(item.originalTitle,'Original');
@@ -50,6 +50,8 @@ test('schema migrations and rating normalization use the current model',() => {
     assert.equal(item.contentRatings.length,1);
     assert.deepEqual(database.prepare('SELECT name FROM metadata_terms mt JOIN content_metadata_terms cmt ON cmt.term_id=mt.id WHERE cmt.content_id=? AND mt.category=?').all(item.id,'genre').map((row) => row.name),['Fantasy']);
     assert.deepEqual(database.prepare('SELECT language_tag FROM content_languages WHERE content_id=?').all(item.id).map((row) => row.language_tag),['en']);
+    assert.equal(database.prepare('SELECT runtime_minutes FROM movie_details WHERE content_id=?').get(item.id).runtime_minutes,100);
+    assert.equal(database.prepare('SELECT 1 FROM series_details WHERE content_id=?').get(item.id),undefined);
 });
 
 test('invited accounts receive isolated content, statistics, health, and exports',() => {
@@ -108,7 +110,7 @@ test('text fields use field-appropriate whitespace normalization',() => {
 
 test('an already migrated database can complete a fresh backend startup',() => {
     const result=spawnSync(process.execPath,['-e',"require('./database');"],{
-        cwd:path.join(__dirname,'..'),encoding:'utf8',env:{ ...process.env,MOVIE_TRACKER_DATA_DIR:testDirectory,MOVIE_TRACKER_SKIP_LEGACY_IMPORT:'1' },
+        cwd:path.join(__dirname,'..'),encoding:'utf8',env:{ ...process.env,MOVIE_TRACKER_DATA_DIR:testDirectory },
     });
     assert.equal(result.status,0,result.stderr);
 });
@@ -116,15 +118,15 @@ test('an already migrated database can complete a fresh backend startup',() => {
 test('a clean installation creates runtime state without migration artifacts',() => {
     const cleanDirectory=fs.mkdtempSync(path.join(os.tmpdir(),'cinevault-clean-install-'));
     const result=spawnSync(process.execPath,['-e',"require('./database').database.close();"],{
-        cwd:path.join(__dirname,'..'),encoding:'utf8',env:{ ...process.env,MOVIE_TRACKER_DATA_DIR:cleanDirectory,MOVIE_TRACKER_SKIP_LEGACY_IMPORT:'1' },
+        cwd:path.join(__dirname,'..'),encoding:'utf8',env:{ ...process.env,MOVIE_TRACKER_DATA_DIR:cleanDirectory },
     });
     assert.equal(result.status,0,result.stderr);
     assert.doesNotMatch(result.stdout,/database\.migration\.completed/);
     assert.deepEqual(fs.readdirSync(cleanDirectory),['movie-tracker.sqlite']);
     const cleanDatabase=new DatabaseSync(path.join(cleanDirectory,'movie-tracker.sqlite'),{ readOnly:true });
-    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,46);
+    assert.equal(cleanDatabase.prepare('SELECT MAX(version) version FROM schema_migrations').get().version,48);
     assert.ok(cleanDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_deletion_challenges'").get());
-    for (const table of ['people','content_credits','episode_credits','networks','content_networks']) assert.ok(cleanDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
+    for (const table of ['movie_details','series_details','people','content_credits','episode_credits','networks','content_networks']) assert.ok(cleanDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
     assert.equal(cleanDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='series_credits'").get(),undefined);
     assert.deepEqual(cleanDatabase.prepare('PRAGMA table_info(content_items)').all().filter((column) => ['director','casts','series_network'].includes(column.name)),[]);
     assert.deepEqual(cleanDatabase.prepare('PRAGMA table_info(episodes)').all().filter((column) => column.name === 'director'),[]);
@@ -133,6 +135,85 @@ test('a clean installation creates runtime state without migration artifacts',()
     assert.equal(cleanDatabase.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
     assert.equal(cleanDatabase.prepare("SELECT COUNT(*) count FROM audit_log WHERE actor='migration'").get().count,0);
     cleanDatabase.close();
+});
+
+test('content type changes discard incompatible fields and replace subtype details atomically',() => {
+    const movie=Model.addContent(payload({
+        title:'Strict type boundary',duration:'112',director:'Movie Director',
+        watchHistory:[{ watchedAt:'2025-01-02T10:00:00.000Z',languageTag:'en' }],
+    }));
+    const series=Model.updateContent({
+        ...movie,type:'series',subtype:'Limited Series',productionStatus:'Completed',releaseStatus:'Ended',
+        releaseDate:'2025-01-01',seriesStartDate:'2025-01-01',seriesEndDate:'2025-01-31',seriesContinuing:false,
+        duration:'112',director:'Stale Movie Director',watchHistory:movie.watchHistory,
+        seriesCredits:[{ role:'Creator',name:'Series Creator' }],
+        seasons:[{ seasonNumber:1,title:'Season 1',premiereDate:'2025-01-01',episodes:[{
+            episodeNumber:1,title:'Episode 1',airDate:'2025-01-01',duration:'45',watchHistory:[],
+        }] }],
+    });
+    assert.equal(series.type,'series');
+    assert.equal(series.duration,'');
+    assert.equal(series.director,'');
+    assert.deepEqual(series.watchHistory,[]);
+    assert.equal(database.prepare('SELECT 1 FROM movie_details WHERE content_id=?').get(movie.id),undefined);
+    assert.equal(database.prepare('SELECT end_date,continuing FROM series_details WHERE content_id=?').get(movie.id).end_date,'2025-01-31');
+    assert.equal(database.prepare('SELECT COUNT(*) count FROM watch_history WHERE content_id=?').get(movie.id).count,0);
+    assert.equal(database.prepare("SELECT COUNT(*) count FROM content_credits WHERE content_id=? AND role='Director'").get(movie.id).count,0);
+    assert.equal(series.seasons.length,1);
+
+    const convertedMovie=Model.updateContent({
+        ...series,type:'movie',subtype:'Feature Film',productionStatus:'Completed',releaseStatus:'Released',
+        releaseDate:'2025-01-01',duration:'98',director:'New Movie Director',
+        watchHistory:[{ watchedAt:'2025-02-01T10:00:00.000Z',languageTag:'en' }],
+        seasons:series.seasons,seriesCredits:series.seriesCredits,seriesEndDate:'2025-01-31',seriesContinuing:false,
+    });
+    assert.equal(convertedMovie.type,'movie');
+    assert.equal(convertedMovie.duration,'98');
+    assert.equal(convertedMovie.director,'New Movie Director');
+    assert.equal(convertedMovie.seasons,undefined);
+    assert.deepEqual(convertedMovie.seriesCredits,[]);
+    assert.equal(database.prepare('SELECT 1 FROM series_details WHERE content_id=?').get(movie.id),undefined);
+    assert.equal(database.prepare('SELECT runtime_minutes FROM movie_details WHERE content_id=?').get(movie.id).runtime_minutes,98);
+    assert.equal(database.prepare('SELECT COUNT(*) count FROM seasons WHERE series_id=?').get(movie.id).count,0);
+});
+
+test('database constraints reject detail records belonging to the wrong content type',() => {
+    const movie=Model.addContent(payload({ title:'Movie detail constraint' }));
+    const series=Model.addContent(payload({
+        type:'series',title:'Series detail constraint',subtype:'Regular Series',releaseStatus:'Airing',
+        seriesStartDate:'2025-01-01',seriesContinuing:true,duration:'120',director:'Should be discarded',seasons:[],
+    }));
+    assert.throws(() => database.prepare('INSERT INTO series_details(content_id,end_date,continuing) VALUES(?,?,?)').run(movie.id,null,0),/Series details require series content/);
+    assert.throws(() => database.prepare('INSERT INTO movie_details(content_id,runtime_minutes) VALUES(?,?)').run(series.id,90),/Movie details require movie content/);
+    assert.throws(() => database.prepare(`INSERT INTO seasons(id,series_id,season_number,title,created_at,updated_at)
+        VALUES(?,?,?,?,?,?)`).run('invalid-movie-season',movie.id,1,'Season 1',new Date().toISOString(),new Date().toISOString()),/Seasons require series content/);
+    assert.throws(() => database.prepare(`INSERT INTO watch_history(id,content_id,watched_at,language_tag,created_at,updated_at)
+        VALUES(?,?,?,?,?,?)`).run('invalid-series-watch',series.id,'2025-01-02T10:00:00.000Z','en',new Date().toISOString(),new Date().toISOString()),/Title watch history requires movie content/);
+    const invalid=database.prepare(`SELECT COUNT(*) count FROM content_items c WHERE
+        (c.type='movie' AND (NOT EXISTS(SELECT 1 FROM movie_details m WHERE m.content_id=c.id) OR EXISTS(SELECT 1 FROM series_details s WHERE s.content_id=c.id))) OR
+        (c.type='series' AND (NOT EXISTS(SELECT 1 FROM series_details s WHERE s.content_id=c.id) OR EXISTS(SELECT 1 FROM movie_details m WHERE m.content_id=c.id)))`).get().count;
+    assert.equal(invalid,0);
+});
+
+test('season lifecycle rules protect episode structures at API and database boundaries',() => {
+    assert.throws(() => Model.addContent(payload({
+        type:'series',title:'Invalid announced episode season',subtype:'Regular Series',releaseStatus:'Airing',seriesStartDate:'2025-01-01',
+        seasons:[{ seasonNumber:1,productionStatus:'Announced',releaseStatus:'Unscheduled',releaseDate:'2025-01-01',episodes:[{ episodeNumber:1,airDate:'2025-01-01',duration:'30' }] }],
+    })),/must be completed in production and airing or released/);
+    assert.throws(() => Model.addContent(payload({
+        type:'series',title:'Invalid released production stage',subtype:'Regular Series',releaseStatus:'Airing',seriesStartDate:'2025-01-01',
+        seasons:[{ seasonNumber:1,productionStatus:'Filming \/ Production',releaseStatus:'Released',releaseDate:'2025-01-01',episodes:[] }],
+    })),/production and release statuses are inconsistent/);
+    const series=Model.addContent(payload({
+        type:'series',title:'Valid released episode season',subtype:'Regular Series',releaseStatus:'Ended',seriesStartDate:'2025-01-01',seriesEndDate:'2025-02-01',
+        seasons:[{ seasonNumber:1,productionStatus:'Completed',releaseStatus:'Released',releaseDate:'2025-01-01',episodes:[{ episodeNumber:1,airDate:'2025-01-01',duration:'30' }] }],
+    }));
+    const season=database.prepare('SELECT id FROM seasons WHERE series_id=?').get(series.id);
+    assert.throws(() => database.prepare("UPDATE seasons SET production_status='Announced' WHERE id=?").run(season.id),/must be completed in production and airing or released/);
+    const emptySeries=Model.addContent(payload({ type:'series',title:'Direct episode constraint',subtype:'Regular Series',releaseStatus:'Upcoming',seriesStartDate:'2025-01-01',seasons:[{ seasonNumber:1,productionStatus:'Completed',releaseStatus:'Unscheduled',releaseDate:'2025-01-01',episodes:[] }] }));
+    const emptySeason=database.prepare('SELECT id FROM seasons WHERE series_id=?').get(emptySeries.id);
+    assert.throws(() => database.prepare(`INSERT INTO episodes(id,season_id,episode_number,title,created_at,updated_at)
+        VALUES(?,?,?,?,?,?)`).run('invalid-lifecycle-episode',emptySeason.id,1,'Episode 1',new Date().toISOString(),new Date().toISOString()),/Episodes require a completed season that is airing or released/);
 });
 
 test('silent is a movie presentation form only',() => {
@@ -178,7 +259,7 @@ test('release and watch chronology rules protect movies and series',() => {
     assert.throws(() => Model.addContent(payload({ type:'series',title:'Early episode watch',status:'Watched',seriesStartDate:'2025-02-01',seriesContinuing:true,seasons:[{ seasonNumber:1,episodes:[{ episodeNumber:1,airDate:'2025-02-03',watchHistory:[{ watchedAt:'2025-02-02T10:00:00.000Z' }] }] }] })),/cannot be earlier than release date/);
     assert.throws(() => Model.addContent(payload({ title:'Future release',releaseDate:'2999-01-01' })),/Release date cannot be in the future/);
     assert.throws(() => Model.addContent(payload({ title:'Future movie watch',status:'Watched',watchHistory:[{ watchedAt:new Date(Date.now() + 60000).toISOString() }] })),/cannot be in the future/);
-    assert.throws(() => Model.addContent(payload({ type:'series',title:'Future episode release',seriesStartDate:'2025-01-01',seriesContinuing:true,seasons:[{ seasonNumber:1,episodes:[{ episodeNumber:1,airDate:'2999-01-01',watchHistory:[] }] }] })),/Episode release dates cannot be in the future/);
+    assert.throws(() => Model.addContent(payload({ type:'series',title:'Future episode release',seriesStartDate:'2025-01-01',seriesContinuing:true,seasons:[{ seasonNumber:1,episodes:[{ episodeNumber:1,airDate:'2999-01-01',watchHistory:[] }] }] })),/dates cannot be in the future/);
     assert.doesNotThrow(() => {
         const sameDay = Model.addContent(payload({ type:'series',title:'Same local calendar day',seriesStartDate:'2026-09-19',seriesContinuing:true,seasons:[{ seasonNumber:1,episodes:[{ episodeNumber:1,airDate:'2026-09-19',watchHistory:[{ watchedAt:'2026-09-18T18:31:35.069Z' }] }] }] }));
         Model.deleteContent(sameDay.id);
@@ -246,6 +327,18 @@ test('every supported filter is applied by the backend',() => {
     Object.entries(filters).forEach(([key,value]) => assert.equal(Model.getContent({ [key]:value,limit:100 }).items.some((entry) => entry.id === item.id),true,`${key} filter`));
     assert.equal(Model.getContent({ search:'Filter original',limit:100 }).items.some((entry) => entry.id === item.id),true);
     Model.deleteContent(item.id); Model.permanentlyDeleteContent(item.id);
+});
+
+test('duration sorting treats missing movie and calculated series durations as zero',() => {
+    const movie=Model.addContent(payload({ title:'Duration sort movie',duration:'20' }));
+    const series=Model.addContent(payload({ type:'series',subtype:'Regular Series',title:'Duration sort series',seriesStartDate:'2025-01-01',releaseDate:'2025-01-01',seasons:[{ seasonNumber:1,episodes:[{ episodeNumber:1,duration:'35',airDate:'2025-01-01' },{ episodeNumber:2,duration:'35',airDate:'2025-01-02' }] }] }));
+    const missingMovie=Model.addContent(payload({ title:'Duration sort missing movie',duration:'' }));
+    const missingSeries=Model.addContent(payload({ type:'series',subtype:'Regular Series',title:'Duration sort missing series',seriesStartDate:'2025-01-01',releaseDate:'2025-01-01',seasons:[] }));
+    const ids=[movie.id,series.id,missingMovie.id,missingSeries.id];
+    const ascending=Model.getContent({ search:'Duration sort',sort:'duration',order:'ascending',limit:100 }).items.map((item) => item.id);
+    assert.deepEqual(ascending.filter((id) => ids.includes(id)),[missingMovie.id,missingSeries.id,movie.id,series.id]);
+    const descending=Model.getContent({ search:'Duration sort',sort:'duration',order:'descending',limit:100 }).items.map((item) => item.id);
+    assert.deepEqual(descending.filter((id) => ids.includes(id)),[series.id,movie.id,missingMovie.id,missingSeries.id]);
 });
 
 test('bulk lifecycle editing is bounded and validates type-specific values',() => {
@@ -439,7 +532,8 @@ test('restore conflicts require an explicit replace or merge decision',() => {
 test('JSON imports preview conflicts and apply only reviewed decisions',() => {
     const exported=Model.buildExportPayload();
     exported.content.push(payload({ id:'portable-new',title:'Portable new title' }));
-    exported.content.push(payload({ id:'portable-history',title:'Portable historical chronology',releaseDate:'2025-01-02',watchHistory:[{ watchedAt:'2025-01-01T10:00:00.000Z' }] }));
+    exported.content.push(payload({ id:'portable-history',title:'Portable historical chronology',releaseDate:'2025-01-02',watchHistory:[] }));
+    exported.watchHistory.push({ id:'portable-history-watch',content_id:'portable-history',watched_at:'2025-01-01T10:00:00.000Z',language_tag:'en',created_at:'2025-01-01T10:00:00.000Z',updated_at:'2025-01-01T10:00:00.000Z' });
     const preview=Model.previewImport(exported);
     assert.ok(preview.conflicts > 0);
     assert.equal(preview.newItems,2);
@@ -452,12 +546,13 @@ test('JSON imports preview conflicts and apply only reviewed decisions',() => {
     assert.equal(Model.getContent({ search:'Portable new title' }).total,1);
     assert.equal(Model.getContent({ search:'Portable historical chronology' }).total,0);
 
-    const rejected={ schemaVersion:4,content:[
+    const rejected={ schemaVersion:7,exportType:'clean',content:[
         payload({ id:'atomic-valid',title:'Atomic import valid' }),
         payload({ id:'atomic-invalid',title:'Atomic import invalid',releaseDate:'2025-01-02',watchHistory:[{ watchedAt:'2025-01-01T10:00:00.000Z' }] }),
     ] };
     assert.throws(() => Model.applyImport(rejected,{}),/before release date/);
     assert.equal(Model.getContent({ search:'Atomic import valid' }).total,0);
+    assert.throws(() => Model.previewImport({ schemaVersion:6,exportType:'clean',content:[] }),/only CineVault portable schema 7/);
 });
 
 test('view-scoped complete and clean exports retain details without changing entries',() => {
@@ -468,8 +563,26 @@ test('view-scoped complete and clean exports retain details without changing ent
     assert.equal(complete.isSubset,true);
     assert.equal(complete.content.length,1);
     assert.equal(complete.content[0].id,source.id);
+    assert.equal(Object.hasOwn(complete.content[0],'watchHistory'),false);
+    assert.equal(Object.hasOwn(complete.content[0],'contentLinks'),false);
+    assert.equal(Object.hasOwn(complete.content[0],'viewingStatus'),false);
     assert.equal(complete.watchHistory.length,1);
     assert.equal(complete.contentLinks.length,1);
+
+    const seriesSource=Model.addContent(payload({ type:'series',subtype:'Regular Series',title:'Compact series export',releaseStatus:'Ended',seriesStartDate:'2025-01-01',releaseDate:'2025-01-01',seriesEndDate:'2025-01-02',seriesCredits:[{ name:'Series Creator',role:'Creator' }],seasons:[{ seasonNumber:1,title:'Season 1',productionStatus:'Completed',releaseStatus:'Released',releaseDate:'2025-01-01',episodes:[{ episodeNumber:1,title:'Episode 1',airDate:'2025-01-01',duration:'30',director:'Episode Director',watchHistory:[{ watchedAt:'2025-01-02T10:00:00.000Z',languageTag:'en' }] }] }] }));
+    const completeSeries=Model.buildExportPayload({ format:'complete',scope:'Selection',ids:[seriesSource.id] });
+    assert.equal(Object.hasOwn(completeSeries.content[0],'seasons'),false);
+    assert.equal(Object.hasOwn(completeSeries.content[0],'duration'),false);
+    assert.equal(Object.hasOwn(completeSeries.content[0],'director'),false);
+    assert.equal(completeSeries.seasons.length,1);
+    assert.equal(completeSeries.episodes.length,1);
+    assert.equal(completeSeries.episodeCredits[0].person_name,'Episode Director');
+    const seriesTransfer=structuredClone(completeSeries); seriesTransfer.content[0].title='Compact series rebuilt';
+    assert.equal(Model.previewImport(seriesTransfer).validItems,1);
+    Model.applyImport(seriesTransfer,{});
+    const rebuiltSeries=Model.getContent({ search:'Compact series rebuilt',limit:1 }).items[0];
+    assert.equal(rebuiltSeries.seasons[0].episodes[0].director,'Episode Director');
+    assert.equal(rebuiltSeries.seasons[0].episodes[0].watchHistory.length,1);
 
     const clean=Model.buildExportPayload({ format:'clean',scope:'Filtered movies',query:{ search:'Scoped export title',type:'movie',sort:'title',order:'ascending' } });
     assert.equal(clean.exportType,'clean');
@@ -500,7 +613,7 @@ test('view-scoped complete and clean exports retain details without changing ent
 
 test('import strategies either add new identities or transactionally replace the library',() => {
     const retained=Model.addContent(payload({ title:'Import strategy retained' }));
-    const additive={ schemaVersion:4,exportType:'clean',content:[
+    const additive={ schemaVersion:7,exportType:'clean',content:[
         payload({ title:'Import strategy retained',id:undefined }),
         payload({ title:'Import strategy added',id:undefined }),
     ] };
@@ -508,7 +621,7 @@ test('import strategies either add new identities or transactionally replace the
     assert.equal(appended.added,1); assert.equal(appended.skipped,1);
     assert.equal(Model.getById(retained.id).title,'Import strategy retained');
 
-    const replacement={ schemaVersion:4,exportType:'clean',content:[payload({ title:'Replacement library title',id:undefined })] };
+    const replacement={ schemaVersion:7,exportType:'clean',content:[payload({ title:'Replacement library title',id:undefined })] };
     const replaced=Model.applyImport(replacement,{}, {},{ strategy:'replace-library' });
     assert.equal(replaced.added,1);
     assert.equal(Model.getContent({ all:true }).total,1);
@@ -534,7 +647,7 @@ test('verified backups can be restored into an isolated data directory',() => {
     fs.writeFileSync(`${active}-wal`,'stale-wal-sidecar');
     fs.writeFileSync(`${active}-shm`,'stale-shm-sidecar');
     const result = spawnSync(process.execPath,[path.join(__dirname,'..','scripts','restore.js'),backup],{
-        env:{ ...process.env,MOVIE_TRACKER_DATA_DIR:restoreDirectory,MOVIE_TRACKER_SKIP_LEGACY_IMPORT:'1' },encoding:'utf8',
+        env:{ ...process.env,MOVIE_TRACKER_DATA_DIR:restoreDirectory },encoding:'utf8',
     });
     assert.equal(result.status,0,result.stderr);
     const preservedWal=fs.readdirSync(restoreDirectory).find((name) => name.includes('.before-restore-') && name.endsWith('-wal'));

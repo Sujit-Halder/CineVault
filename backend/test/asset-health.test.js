@@ -6,7 +6,6 @@ const path=require('path');
 
 const directory=fs.mkdtempSync(path.join(os.tmpdir(),'movie-asset-test-'));
 process.env.MOVIE_TRACKER_DATA_DIR=directory;
-process.env.MOVIE_TRACKER_SKIP_LEGACY_IMPORT='1';
 const health=require('../asset-health');
 const { database }=require('../database');
 

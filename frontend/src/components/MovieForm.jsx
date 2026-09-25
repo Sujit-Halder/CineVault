@@ -159,6 +159,28 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
   // Updates one season while preserving the remaining series structure.
   const updateSeason = (index, patch) => update('seasons', form.seasons.map((season, itemIndex) => itemIndex === index ? { ...season, ...patch } : season));
 
+  // Returns whether a season has reached the lifecycle stage required to contain episodes.
+  const seasonAcceptsEpisodes = (season) => season.productionStatus === 'Completed'
+    && ['Airing','Released'].includes(season.releaseStatus) && Boolean(season.releaseDate);
+
+  // Returns whether a production option is compatible with the season's release state.
+  const seasonProductionAllowed = (season, value) => {
+    if (season.episodes?.length) return value === 'Completed';
+    if (['Airing','Released'].includes(season.releaseStatus)) return value === 'Completed';
+    if (season.releaseStatus === 'Upcoming') return ['Announced','In Development','Pre-Production','Filming / Production','Post-Production','Completed'].includes(value);
+    if (season.releaseStatus === 'Canceled') return ['Canceled','Shelved','Completed'].includes(value);
+    return true;
+  };
+
+  // Returns whether a release option is compatible with the season's production state.
+  const seasonReleaseAllowed = (season, value) => {
+    if (season.episodes?.length) return ['Airing','Released'].includes(value);
+    if (['Airing','Released'].includes(value)) return season.productionStatus === 'Completed';
+    if (value === 'Upcoming') return ['Announced','In Development','Pre-Production','Filming / Production','Post-Production','Completed'].includes(season.productionStatus);
+    if (value === 'Canceled') return ['Canceled','Shelved','Completed'].includes(season.productionStatus);
+    return true;
+  };
+
   // Removes one season from the series structure.
   const removeSeason = (index) => {
     const season=form.seasons[index];
@@ -168,6 +190,7 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
   // Resizes a season's episode list while preserving every existing episode record.
   const setEpisodeCount = (seasonIndex, value) => {
     const season=form.seasons[seasonIndex];
+    if (!seasonAcceptsEpisodes(season)) return;
     const episodes=[...(season.episodes || [])];
     const count=Math.min(1000,Math.max(episodes.length,Number(value) || 0));
     while (episodes.length < count) {
@@ -253,7 +276,7 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
           <div className="form-grid">
             <label className="span-two">Title<input required value={form.title} onChange={(event) => update('title', event.target.value)} /></label>
             <label className="span-two">Original title<input value={form.originalTitle} onChange={(event) => update('originalTitle', event.target.value)} /></label>
-            <label>Content type<select value={form.type} onChange={(event) => { const type = event.target.value; setForm((current) => ({ ...current,type,subtype:catalogs.subtypes?.[type]?.[0] || '',presentationForms:[] })); }}><option value="movie">Movie</option><option value="series">Series</option></select></label>
+            <label>Content type<select value={form.type} onChange={(event) => { const type = event.target.value; setForm((current) => ({ ...current,type,subtype:catalogs.subtypes?.[type]?.[0] || '',releaseStatus:'Unscheduled',presentationForms:[],duration:type === 'movie' ? current.duration : '',director:type === 'movie' ? current.director : '',watchHistory:type === 'movie' ? current.watchHistory : [],seriesStartDate:type === 'series' ? (current.seriesStartDate || current.releaseDate) : '',seriesEndDate:type === 'series' ? current.seriesEndDate : '',seriesContinuing:false,seriesNetwork:type === 'series' ? current.seriesNetwork : '',seriesCredits:type === 'series' ? current.seriesCredits : [],seasons:type === 'series' ? current.seasons : [] })); }}><option value="movie">Movie</option><option value="series">Series</option></select></label>
             <label title={catalogs.subtypeDescriptions?.[form.subtype] || 'Choose the structural subtype'}>Subtype<select title={catalogs.subtypeDescriptions?.[form.subtype] || 'Choose the structural subtype'} value={form.subtype} onChange={(event) => update('subtype', event.target.value)}>{(catalogs.subtypes?.[form.type] || []).map((item) => <option key={item} title={catalogs.subtypeDescriptions?.[item] || ''}>{item}</option>)}</select><small>{catalogs.subtypeDescriptions?.[form.subtype]}</small></label>
             <label title="Where the title is in its creative and production process">Production status<select title={PRODUCTION_STATUSES.find(([value]) => value === form.productionStatus)?.[1]} value={form.productionStatus} onChange={(event) => update('productionStatus',event.target.value)}>{PRODUCTION_STATUSES.map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select></label>
             <label title="Where the title is in its public release lifecycle">Release status<select title={(form.type === 'series' ? SERIES_RELEASE_STATUSES : MOVIE_RELEASE_STATUSES).find(([value]) => value === form.releaseStatus)?.[1]} value={form.releaseStatus} onChange={(event) => update('releaseStatus',event.target.value)}>{(form.type === 'series' ? SERIES_RELEASE_STATUSES : MOVIE_RELEASE_STATUSES).map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select></label>
@@ -312,10 +335,10 @@ const MovieForm = ({ onClose, onSubmit, initialData, catalogs }) => {
               <div className="season-panel">
               <button className="section-delete" type="button" title={`Delete Season ${season.seasonNumber || seasonIndex + 1} and every episode and watch record inside it`} onClick={() => removeSeason(seasonIndex)} aria-label={`Remove season ${season.seasonNumber}`}><FaTrash /> Delete season</button>
               <div className="season-identity-grid"><label title="The season's unique number within this series">Season number<input title="Enter the season number" aria-label="Season number" type="number" min="0" value={season.seasonNumber} onChange={(event) => updateSeason(seasonIndex,{ seasonNumber:event.target.value })} /></label><label title="The official or descriptive season title">Season title<input title="Enter the season title; a blank value becomes Season followed by its number" aria-label="Season title" placeholder={`Season ${season.seasonNumber || seasonIndex + 1}`} value={season.title} onChange={(event) => updateSeason(seasonIndex,{ title:event.target.value })} /></label></div>
-              <div className="season-meta-grid"><label title="The season's production-stage status">Production status<select title={PRODUCTION_STATUSES.find(([value]) => value === (season.productionStatus || 'Announced'))?.[1]} value={season.productionStatus || 'Announced'} onChange={(event) => updateSeason(seasonIndex,{ productionStatus:event.target.value })}>{PRODUCTION_STATUSES.map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select></label><label title="The season's public release status">Release status<select title={SEASON_RELEASE_STATUSES.find(([value]) => value === (season.releaseStatus || 'Unscheduled'))?.[1]} value={season.releaseStatus || 'Unscheduled'} onChange={(event) => updateSeason(seasonIndex,{ releaseStatus:event.target.value })}>{SEASON_RELEASE_STATUSES.map(([value,description]) => <option key={value} value={value} title={description}>{value}</option>)}</select></label></div>
+              <div className="season-meta-grid"><label title="The season's production-stage status">Production status<select title={PRODUCTION_STATUSES.find(([value]) => value === (season.productionStatus || 'Announced'))?.[1]} value={season.productionStatus || 'Announced'} onChange={(event) => updateSeason(seasonIndex,{ productionStatus:event.target.value })}>{PRODUCTION_STATUSES.map(([value,description]) => <option key={value} value={value} disabled={!seasonProductionAllowed(season,value)} title={description}>{value}</option>)}</select></label><label title="The season's public release status">Release status<select title={SEASON_RELEASE_STATUSES.find(([value]) => value === (season.releaseStatus || 'Unscheduled'))?.[1]} value={season.releaseStatus || 'Unscheduled'} onChange={(event) => updateSeason(seasonIndex,{ releaseStatus:event.target.value })}>{SEASON_RELEASE_STATUSES.map(([value,description]) => <option key={value} value={value} disabled={!seasonReleaseAllowed(season,value)} title={description}>{value}</option>)}</select></label></div>
               <div className="season-meta-grid"><label title="The date this season premiered">Premiere date<BufferedDateInput title="The complete date is copied to every episode in this season after editing is finished" aria-label="Season premiere date" min={form.seriesStartDate || undefined} max={today} value={season.releaseDate || ''} onCommit={(dateValue) => updateSeasonPremiere(seasonIndex,dateValue)} /></label><label title="A direct HTTP or HTTPS link to this season's poster">Season poster URL<input title="Enter the season-specific poster image URL" type="url" placeholder="https://example.com/season-poster.jpg" value={season.posterUrl || ''} onChange={(event) => updateSeason(seasonIndex,{ posterUrl:event.target.value })} /></label></div>
               <label className="season-synopsis" title="A summary describing this season as a whole">Season synopsis<textarea title="Enter the season synopsis" rows="3" value={season.synopsis || ''} onChange={(event) => updateSeason(seasonIndex,{ synopsis:event.target.value })} /></label>
-              <label className="episode-count" title="Increase this number to generate episode entries; remove individual episodes with their delete button">Number of episodes<input type="number" min={season.episodes?.length || 0} max="1000" value={season.episodes?.length || 0} onChange={(event) => setEpisodeCount(seasonIndex,event.target.value)} /></label>
+              <label className="episode-count" title={seasonAcceptsEpisodes(season) ? 'Increase this number to generate episode entries; remove individual episodes with their delete button' : 'Set a premiere date, Completed production, and Airing or Released status before adding episodes'}>Number of episodes<input type="number" min={season.episodes?.length || 0} max="1000" disabled={!seasonAcceptsEpisodes(season)} value={season.episodes?.length || 0} onChange={(event) => setEpisodeCount(seasonIndex,event.target.value)} />{!seasonAcceptsEpisodes(season) && <small>Available after production is Completed and the season is Airing or Released with a premiere date.</small>}</label>
               <div className="episode-list">
               {season.episodes?.map((episode, episodeIndex) => <details className="episode-block" key={episode.id || episodeIndex}>
                 <summary className="episode-collapse-header" title={`Expand or collapse Episode ${episode.episodeNumber || episodeIndex + 1}`}>

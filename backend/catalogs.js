@@ -183,35 +183,21 @@ const CONTENT_SUBTYPE_DESCRIPTIONS = {
 
 const EPISODE_TYPES = ['Regular','Pilot','Backdoor Pilot','Season Premiere','Midseason Premiere','Midseason Finale','Season Finale','Series Finale','Special','Holiday Special','Recap','Clip Show','Crossover','Two-Part Episode','Bonus','Webisode','Minisode','Unaired Episode'];
 
-const SUBTYPE_ALIASES = {
-    feature:'Feature Film',short:'Short Film','documentary-feature':'Documentary Feature','tv-movie':'Television Film','anthology-film':'Anthology Film',
-    scripted:'Regular Series','Scripted Series':'Regular Series','Continuing Series':'Regular Series',miniseries:'Limited Series',Miniseries:'Limited Series','limited-series':'Limited Series','anthology-series':'Anthology Series',
-    'documentary-series':'Documentary Series',animation:'Animated Series',anime:'Anime Series','web-series':'Web Series',
-    reality:'Reality Series',variety:'Variety Series',
-    'Animated Feature':'Feature Film','Animation Feature':'Feature Film','Animated Short':'Short Film','Short Animation':'Short Film',
-};
-
-// Converts subtype aliases to maintained display labels for the selected content type.
+// Validates a subtype against the maintained catalog for its content type.
 function normalizeSubtype(type, value) {
-    const normalized = SUBTYPE_ALIASES[value] || value;
     const options = CONTENT_SUBTYPES[type === 'series' ? 'series' : 'movie'];
-    return options.includes(normalized) ? normalized : options[0];
+    return options.includes(value) ? value : options[0];
 }
 
 const WATCH_SOURCE_PROVIDER_METHODS = new Map(WATCH_SOURCES.map((source) => [source.label.toLowerCase(), source.id]));
 const WATCH_SOURCE_BY_ID = new Map(WATCH_SOURCES.map((source) => [source.id,source]));
-const WATCH_SOURCE_METHOD_ALIASES = {
-    'custom-legacy':'piracy-website','free-streaming-legacy':'free-streaming-site','local-file-legacy':'torrent-download',
-    'shared-access-legacy':'shared-account',
-};
-
 // Converts viewing-source records into maintained catalog entries without discarding provider details.
 function normalizeWatchSources(values = []) {
     const normalized = values.map((value) => {
         const source = typeof value === 'string' ? { provider:value } : (value || {});
         const provider = normalizeSingleLineText(source.provider);
         const providerMethod = WATCH_SOURCE_PROVIDER_METHODS.get(provider.toLowerCase());
-        const method = providerMethod || WATCH_SOURCE_METHOD_ALIASES[source.method] || source.method || (provider ? 'other' : '');
+        const method = providerMethod || source.method || (provider ? 'other' : '');
         const catalogLabel = WATCH_SOURCE_BY_ID.get(method)?.label || '';
         const result = { method,provider:provider.toLowerCase() === catalogLabel.toLowerCase() ? '' : provider };
         return result;

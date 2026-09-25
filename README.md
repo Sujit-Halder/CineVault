@@ -161,7 +161,7 @@ Content
 
 Account identity and library ownership are relational. `app_users` stores salted scrypt password hashes and roles; `auth_sessions`, `auth_invitations`, and `password_reset_tokens` store only one-way token hashes and expirations. `library_entries` represents each user's saved title state, while `content_items.owner_user_id` enforces the isolated-library boundary.
 
-Repeatable metadata is relational: `metadata_terms` + `content_metadata_terms` cover genres, presentation forms, awards, and tags; dedicated tables store original-production languages, origin countries, complete official-rating provenance, and watching sources. People, title credits, episode credits, production companies, networks, seasons, episodes, viewing events, and content links use dedicated related tables. Runtime hydration, strict filters, statistics, Data Health, imports, and exports are assembled with SQL queries. The repository now starts directly from the consolidated schema 46 baseline; historical migration-only converters are no longer included.
+Repeatable metadata is relational: `metadata_terms` + `content_metadata_terms` cover genres, presentation forms, awards, and tags; dedicated tables store original-production languages, origin countries, complete official-rating provenance, and watching sources. People, title credits, episode credits, production companies, networks, seasons, episodes, viewing events, and content links use dedicated related tables. Runtime hydration, strict filters, statistics, Data Health, imports, and exports are assembled with SQL queries. Schema 48 enforces the movie/series boundary through one-to-one `movie_details` and `series_details` tables and validates season production/release combinations before episodes can exist.
 
 ### Relational schema map
 
@@ -169,6 +169,8 @@ Repeatable metadata is relational: `metadata_terms` + `content_metadata_terms` c
 erDiagram
     APP_USERS ||--o{ LIBRARY_ENTRIES : owns
     APP_USERS ||--o{ CONTENT_ITEMS : creates
+    CONTENT_ITEMS ||--o| MOVIE_DETAILS : movie_only
+    CONTENT_ITEMS ||--o| SERIES_DETAILS : series_only
     CONTENT_ITEMS ||--o{ SEASONS : contains
     SEASONS ||--o{ EPISODES : contains
     CONTENT_ITEMS ||--o{ WATCH_HISTORY : records
@@ -228,6 +230,8 @@ Languages use a curated audiovisual-media subset of canonical BCP 47 tags. The i
 
 Each season stores its number, title, production status, release status, premiere date, poster URL, synopsis, timestamps, and calculated completion state. Each episode stores its number, title, type, release/air date, runtime, director names, summary, playback progress, timestamps, and repeatable watch history. Missing titles default to `Season N` and `Episode N`. Season and episode numbers must be unique inside their parent. Changing a season premiere can populate its episode release dates through the editor’s reviewed update behavior.
 
+A season may contain episodes only after production is `Completed`, its release state is `Airing` or `Released`, and it has a non-future premiere date. `Upcoming` seasons accept only active production stages; released seasons cannot remain Announced or in production; canceled release state accepts Canceled, Shelved, or already Completed production. The editor disables incompatible choices, the API rejects manipulated payloads and imports, and SQLite triggers protect direct writes.
+
 Supported episode types include Regular, Pilot, Backdoor Pilot, Season Premiere, Midseason Premiere, Midseason Finale, Season Finale, Series Finale, Special, Holiday Special, Recap, Clip Show, Crossover, Two-Part Episode, Bonus, Webisode, Minisode, and Unaired Episode.
 
 ### Dates, identity, and runtime
@@ -249,11 +253,11 @@ Titles, original titles, directors, cast, production companies, networks, season
 
 Production companies use canonical relational records plus searchable aliases and a many-to-many content link. Full corporate names remain the canonical stored value. Data Health suggests—but never automatically performs—possible merges. Countries are stored as stable ISO-style codes and displayed as names. Official ratings retain territory, authority, code, and any historical classification metadata, with at most one rating per territory.
 
-Primary library tables include `content_items`, `library_entries`, `seasons`, `episodes`, `watch_history`, `episode_watch_history`, `content_links`, `metadata_terms`, `content_metadata_terms`, `content_languages`, `content_countries`, `content_official_ratings`, `content_watch_sources`, `production_companies`, `production_company_aliases`, and `content_production_companies`. People, title-level credits, episode directors, and series networks are normalized through `people`, `content_credits`, `episode_credits`, `networks`, and `content_networks`; the superseded comma-separated credit/network columns and `series_credits` table are removed after verified migration parity. Operational and security tables include `app_users`, `auth_sessions`, `auth_invitations`, `password_reset_tokens`, `account_deletion_challenges`, `ownership_transfer_challenges`, `security_rate_limits`, `notifications`, `asset_checks`, `audit_log`, and `schema_migrations`. SQLite FTS5 maintains the `content_search` index and its internal support tables.
+Primary library tables include `content_items`, the type-specific one-to-one tables `movie_details` and `series_details`, `library_entries`, `seasons`, `episodes`, `watch_history`, `episode_watch_history`, `content_links`, `metadata_terms`, `content_metadata_terms`, `content_languages`, `content_countries`, `content_official_ratings`, `content_watch_sources`, `production_companies`, `production_company_aliases`, and `content_production_companies`. People, title-level credits, episode directors, and series networks are normalized through `people`, `content_credits`, `episode_credits`, `networks`, and `content_networks`; the superseded comma-separated credit/network columns and `series_credits` table are removed after verified migration parity. Operational and security tables include `app_users`, `auth_sessions`, `auth_invitations`, `password_reset_tokens`, `account_deletion_challenges`, `ownership_transfer_challenges`, `security_rate_limits`, `notifications`, `asset_checks`, `audit_log`, and `schema_migrations`. SQLite FTS5 maintains the `content_search` index and its internal support tables.
 
-Schema 46 is the maintained relational baseline. The completed cutover verified every director, cast member, episode director, series credit, and network before removing its superseded projection, and both maintained installations were confirmed at version 46 before the historical converters were retired.
+Schema 48 is the maintained relational baseline. The completed cutover verified every director, cast member, episode director, series credit, and network before removing its superseded projection. It then moved movie runtime and series-only lifecycle values out of the shared title table and introduced strict season lifecycle constraints. New installations start directly at version 48; intact version-46 and version-47 databases are upgraded transactionally with verified pre-migration backups.
 
-> **Database compatibility:** this code expects a schema-46 database. To recover a database older than version 46, first open a copy with the matching older CineVault release and complete its migrations, verify integrity, and only then use the current release. Never point the consolidated baseline directly at an unverified pre-46 database.
+> **Database compatibility:** this code expects schema 48 and supports direct upgrades from schemas 46 and 47. To recover a database older than version 46, first open a copy with the matching older CineVault release and complete its migrations, verify integrity, and only then use the current release. Never point the consolidated baseline directly at an unverified pre-46 database.
 
 ## 🗄️ Storage, backup, and disaster recovery
 
@@ -345,7 +349,7 @@ The current live database is always `backend/data/movie-tracker.sqlite`. Files b
 
 The website Export button offers two formats:
 
-- **Complete recovery export** retains database IDs, relationship IDs, creation/update timestamps, and every movie, series, season, episode, watch record, source, link, company, rating, and credit detail.
+- **Complete recovery export** uses portable schema 7 and retains database IDs, relationship IDs, creation/update timestamps, and every movie, series, season, episode, watch record, source, link, company, rating, and credit detail. Relational child records appear once in their top-level recovery collections rather than being duplicated inside each title. Import intentionally accepts only schema 7 so obsolete nested structures cannot re-enter the current data model.
 - **Clean transferable export** retains the same library information in nested movie/series objects while omitting database-specific IDs and internal timestamps. Importing it generates fresh IDs and can build an equivalent CineVault library.
 
 Exports are scoped to the immediate library view. Library, Movies, Series, Favorites, Watch Later, and Trash export only the titles belonging to that tab after the current search, filters, and sorting are applied—not merely the visible pagination page. In table view, selecting titles overrides the view scope; selections persist across pages and only those selected titles are exported. Both formats remain importable. An exported Trash entry is deliberately restored as an active title on import because a safety export should recover the title rather than reproduce its pending-deletion state. Export is unavailable when the current scope contains no titles.
@@ -450,7 +454,7 @@ Account-removal archives carry the portable export schema version plus a SHA-256
 
 For Gmail delivery, enable two-step verification for the mailbox, create a Google app password, and store it only as `GMAIL_APP_PASSWORD`. In development, when Gmail SMTP is not configured, the backend writes the invitation or reset URL to the application log for local testing; production refuses to pretend that an email was sent.
 
-On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. Backup and export folders appear later only when their corresponding features are used. Legacy JSON is imported only when `backend/movies.json` exists and a database has not already been initialized; keep its generated migration report and pre-SQLite archive until the imported library has been verified. Subsequent startups use the SQLite database directly.
+On a clean first startup, only `backend/data/movie-tracker.sqlite` is created. Backup and export folders appear later only when their corresponding features are used. Portable complete and clean JSON files are reviewed and imported through Data Health; startup never imports files implicitly.
 
 ## ⚙️ Configuration reference
 
@@ -485,7 +489,7 @@ Authentication sessions are persisted in SQLite and expire after 12 hours of ina
 |---|---|---|
 | `VITE_API_URL` | `http://localhost:3001` | Public origin used for API calls; use the HTTPS site origin in same-origin production |
 | `VITE_SERVER_IP` | `localhost` | Development-server bind host |
-| `VITE_SERVER_PORT` | `3000` | Development-server port |
+| `VITE_SERVER_PORT` | `3000` | Development and local preview server port |
 
 Vite variables are compiled into the frontend bundle and are never secret. Do not place passwords or encryption keys in any `VITE_*` variable.
 
@@ -495,7 +499,7 @@ Vite variables are compiled into the frontend bundle and are never secret. Do no
 |---|---|---|
 | `frontend` | `npm run dev` | Start the Vite development server |
 | `frontend` | `npm run build` | Create a production frontend build |
-| `frontend` | `npm run preview` | Preview the already-built frontend locally |
+| `frontend` | `npm run preview` | Preview the already-built frontend locally using `VITE_SERVER_IP` and `VITE_SERVER_PORT` |
 | `frontend` | `npm run lint` | Run frontend static checks |
 | `frontend` | `npm test` | Run state helpers, rendered React interactions, axe accessibility checks, and WCAG contrast guards |
 | `frontend` | `npm run test:a11y` | Run accessibility structure and contrast tests only |
@@ -582,8 +586,6 @@ All protected routes use a persisted account session cookie. Mutating requests r
 | `POST` | `/api/v1/accounts/ownership/request` | Email the current owner an ownership-transfer code |
 | `POST` | `/api/v1/accounts/ownership/confirm` | Atomically complete a verified ownership transfer |
 
-Legacy `/api/movie` endpoints remain available during the transition.
-
 ## 🌐 Private internet hosting on Amazon EC2
 
 GitHub can safely hold a private source repository after secrets and runtime data are removed. GitHub Pages alone cannot host CineVault because it serves static files and cannot run Express or persist SQLite. The simplest complete deployment is one EC2 instance serving the React build and proxying `/api` to a private Node process.
@@ -646,7 +648,7 @@ Then verify ownership and mode on EC2:
 ```bash
 chmod 600 /var/lib/cinevault/movie-tracker.sqlite
 cd /opt/cinevault/backend
-MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault MOVIE_TRACKER_SKIP_LEGACY_IMPORT=1 npm run backup
+MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault npm run backup
 ```
 
 ### 4. Configure production
@@ -659,7 +661,6 @@ TRUST_PROXY=1
 PORT=3001
 WEBSITE=https://movies.sujithalder.in
 MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault
-MOVIE_TRACKER_SKIP_LEGACY_IMPORT=1
 APP_PASSWORD=replace-with-a-long-random-unique-password
 GMAIL_SMTP_USER=your-cinevault-mailbox@gmail.com
 GMAIL_APP_PASSWORD=replace-with-a-google-app-password
@@ -940,7 +941,6 @@ TRUST_PROXY=1
 PORT=3001
 WEBSITE=https://movies.sujithalder.in
 MOVIE_TRACKER_DATA_DIR=/var/lib/cinevault
-MOVIE_TRACKER_SKIP_LEGACY_IMPORT=1
 APP_PASSWORD=replace-with-a-long-random-unique-password
 GMAIL_SMTP_USER=your-cinevault-mailbox@gmail.com
 GMAIL_APP_PASSWORD=replace-with-a-google-app-password
@@ -1136,7 +1136,7 @@ For operational diagnosis, start with the visible error, its `X-Request-Id`, Act
 ```text
 Movie-Tracker/
 ├── backend/
-│   ├── database.js          # consolidated schema 46 and backup support
+│   ├── database.js          # consolidated schema 48 and backup support
 │   ├── model.js             # repository and domain persistence
 │   ├── controller.js        # HTTP request handlers
 │   ├── catalogs.js          # maintained selection catalogs
