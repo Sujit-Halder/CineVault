@@ -70,6 +70,11 @@ const RATING_SYSTEMS = [
     { territory:'ES', authority:'ICAA', codes:['A','7','12','16','18','X'] },
     { territory:'MX', authority:'RTC', codes:['AA','A','B','B15','C','D'] },
     { territory:'CN', authority:'No national age classification system', codes:['Unrated'] },
+    { territory:'RU', authority:'Ministry of Culture of the Russian Federation', codes:['0+','6+','12+','16+','18+'] },
+    { territory:'BE', authority:'Kijkwijzer/Cinecheck', codes:['AL/TOUS','6','9','12','14','16','18'] },
+    { territory:'NL', authority:'Kijkwijzer', codes:['AL','6','9','12','14','16','18'] },
+    { territory:'LU', authority:'ALIA', codes:['0','6','12','16','18'] },
+    { territory:'HK', authority:'Office for Film, Newspaper and Article Administration', codes:['I','IIA','IIB','III'] }
 ];
 
 const RATING_TERRITORY_ALIASES = { USA:'US', IND:'IN', UK:'GB' };
@@ -114,6 +119,7 @@ const GENRES = [
     { name:'Romance', children:['Historical Romance','Romantic Drama','Tragic Romance'] },
     { name:'Science Fiction', children:['Apocalyptic','Cyberpunk','Dystopian','Space Opera','Time Travel'] },
     { name:'Thriller', children:['Crime Thriller','Erotic Thriller','Legal Thriller','Political Thriller','Psychological Thriller','Techno-Thriller'] },
+    { name:'Vigilante', children:[] },
     { name:'Sport', children:[] },
     { name:'Western', children:['Anti-Western','Contemporary Western','Spaghetti Western'] },
 ];
