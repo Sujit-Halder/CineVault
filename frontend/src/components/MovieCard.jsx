@@ -97,7 +97,7 @@ const MovieCard = ({ movieData, catalogs, trashed = false, onEdit, onDelete, onT
         </div>
         {(movieData.presentationForms?.length > 0 || movieData.genres?.length > 0) && <div className="genre-row classification-row">{movieData.presentationForms?.map((item) => <span className="presentation-form" key={`form-${item}`} title={`Presentation form: ${item}`}>{item}</span>)}{movieData.genres?.map((genre) => <span key={`genre-${genre}`} title={`Genre: ${genre}`}>{genre}</span>)}</div>}
         {movieData.tags?.length > 0 && <div className="tag-row">{movieData.tags.map((tag) => <span key={tag}>#{tag.toLowerCase().replace(/\s+/g, '_')}</span>)}</div>}
-        {movieData.type === 'movie' && movieData.director && <p><strong>Director(s)</strong> {movieData.director}</p>}
+        {movieData.type === 'movie' && movieData.director && <p><strong>Director</strong> {movieData.director}</p>}
         {movieData.type === 'series' && movieData.seriesCredits?.length > 0 && <p title="Credits applying to the complete series"><strong>Series credits</strong> {movieData.seriesCredits.map((credit) => `${credit.name} · ${credit.role}`).join(' | ')}</p>}
         {movieData.type === 'series' && movieData.seriesNetwork && <p><strong>Network</strong> {movieData.seriesNetwork}</p>}
         {movieData.watchSources?.length > 0 && <p><strong>Watched via</strong> {movieData.watchSources.map((source) => `${sourceLabel(source.method)}${source.provider ? ` · ${source.provider}` : ''}`).join(' | ')}</p>}
