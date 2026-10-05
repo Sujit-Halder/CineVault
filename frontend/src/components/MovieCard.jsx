@@ -24,13 +24,140 @@ function countryName(code) {
 }
 
 // Formats the elapsed calendar time since a viewing record.
-function relativeWatchTime(value) {
-  const days = Math.max(0,Math.floor((Date.now() - new Date(value).getTime()) / 86400000));
-  if (days === 0) return 'today';
-  if (days === 1) return 'yesterday';
-  if (days < 30) return `${days} days ago`;
-  if (days < 365) return `${Math.floor(days / 30)} months ago`;
-  return `${Math.floor(days / 365)} years ago`;
+// relativeWatchTime.js
+// Localized, calendar-based "time ago" labels: today, yesterday, N days/weeks/months/years ago.
+// Calendar logic only: 23:59 yesterday vs 00:01 today counts as a day apart, not "2 minutes".
+
+// ---- Clock correction ---------------------------------------------------
+let clockOffsetMs = 0;
+
+/** Correct a wrong device clock using a trusted server time (ms since epoch). */
+export function syncClock(serverTimeMs, { latencyMs = 0 } = {}) {
+  if (!Number.isFinite(serverTimeMs)) return;
+  clockOffsetMs = serverTimeMs + latencyMs - Date.now();
+}
+
+/** Reset to the raw device clock. */
+export function resetClock() {
+  clockOffsetMs = 0;
+}
+
+/**
+ * Read the server time from a response's Date header (1 s resolution).
+ * Compensates for half the round-trip time and the truncated second.
+ * Cross-origin servers must send `Access-Control-Expose-Headers: Date`.
+ */
+export async function syncClockFromServer(url = '/', fetchImpl = globalThis.fetch) {
+  try {
+    const t0 = Date.now();
+    const res = await fetchImpl(url, { method: 'HEAD', cache: 'no-store' });
+    const t1 = Date.now();
+    const header = res.headers.get('Date');
+    if (!header) return false;
+    const server = new Date(header).getTime();
+    if (Number.isNaN(server)) return false;
+    syncClock(server + 500, { latencyMs: (t1 - t0) / 2 }); // +500 ms: header is floored to the second
+    return true;
+  } catch {
+    return false; // offline or blocked: keep the device clock
+  }
+}
+
+// ---- Caches -------------------------------------------------------------
+const rtfCache = new Map();
+const dtfCache = new Map();
+
+function getFormatters(locale) {
+  const key = Array.isArray(locale) ? locale.join(',') : String(locale);
+  let pair = rtfCache.get(key);
+  if (!pair) {
+    const make = (loc) => ({
+      auto: new Intl.RelativeTimeFormat(loc, { numeric: 'auto' }), // "today", "yesterday"
+      always: new Intl.RelativeTimeFormat(loc, { numeric: 'always' }), // "1 week ago"
+    });
+    try {
+      pair = make(locale);
+    } catch {
+      pair = make('en'); // invalid locale tag
+    }
+    rtfCache.set(key, pair);
+  }
+  return pair;
+}
+
+// ---- Calendar helpers ---------------------------------------------------
+/** Year, zero-based month and day of `date` in `timeZone` (device zone if omitted). */
+function calendarParts(date, timeZone) {
+  if (!timeZone) {
+    return { y: date.getFullYear(), m: date.getMonth(), d: date.getDate() };
+  }
+  let dtf = dtfCache.get(timeZone);
+  if (!dtf) {
+    dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone, year: 'numeric', month: 'numeric', day: 'numeric',
+    }); // throws RangeError on an invalid zone; the caller falls back
+    dtfCache.set(timeZone, dtf);
+  }
+  const p = {};
+  for (const { type, value } of dtf.formatToParts(date)) p[type] = Number(value);
+  return { y: p.year, m: p.month - 1, d: p.day };
+}
+
+const daysInMonth = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+
+function toDate(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string' && typeof value !== 'number' && !(value instanceof Date)) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// ---- Main ---------------------------------------------------------------
+/**
+ * @param {string|number|Date} value  ISO timestamp, epoch ms or Date
+ * @param {object} [options]
+ * @param {string|string[]} [options.locale]  BCP 47 tag(s); default: browser language
+ * @param {string} [options.timeZone]         IANA zone; default: device zone
+ * @param {Date|number} [options.now]         override "now" (tests)
+ * @returns {string} label, or '' when value is missing/invalid
+ */
+export function relativeWatchTime(value, options = {}) {
+  const then = toDate(value);
+  if (!then) return '';
+
+  const locale = options.locale ?? ((typeof navigator !== 'undefined' && navigator.language) || 'en');
+  const now = toDate(options.now ?? Date.now() + clockOffsetMs);
+  if (!now) return '';
+
+  let tz = options.timeZone;
+  let a, b;
+  try {
+    a = calendarParts(then, tz);
+    b = calendarParts(now, tz);
+  } catch {
+    tz = undefined; // invalid time zone: use the device zone
+    a = calendarParts(then, tz);
+    b = calendarParts(now, tz);
+  }
+
+  const { auto, always } = getFormatters(locale);
+
+  // Whole calendar days. UTC arithmetic on Y/M/D is exact, so DST can't skew it.
+  const days = Math.max(0, (Date.UTC(b.y, b.m, b.d) - Date.UTC(a.y, a.m, a.d)) / 86400000);
+  if (days < 2) return auto.format(-days, 'day'); // today, yesterday
+
+  // Whole calendar months. The day-of-month is clamped to the current month's
+  // length, so Jan 31 -> Feb 28 (or Mar 31 -> Apr 30) counts as a full month.
+  let months = (b.y - a.y) * 12 + (b.m - a.m);
+  if (b.d < Math.min(a.d, daysInMonth(b.y, b.m))) months--;
+
+  if (months >= 12) return always.format(-Math.floor(months / 12), 'year');
+  if (months >= 1) return always.format(-months, 'month');
+
+  const weeks = Math.floor(days / 7);
+  if (weeks >= 1) return always.format(-weeks, 'week');
+
+  return auto.format(-days, 'day');
 }
 
 // Maps rating codes from supported territories to a shared maturity level.
